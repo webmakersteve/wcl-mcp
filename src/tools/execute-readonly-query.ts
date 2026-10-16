@@ -2,6 +2,7 @@ import { z } from "zod";
 import { openConnection } from "../db/duck.js";
 import {
   assertValidReportCode,
+  notDownloadedMessage,
   schemaExists,
   schemaName,
 } from "../db/schema.js";
@@ -37,9 +38,7 @@ export async function executeReadonlyQuery(args: unknown) {
     assertValidReportCode(report_code);
 
     if (!(await schemaExists(report_code))) {
-      return fail(
-        `Report '${report_code}' is not downloaded. Call download_report('${report_code}') first.`,
-      );
+      return fail(await notDownloadedMessage(report_code));
     }
 
     let statement: string;

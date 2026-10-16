@@ -3,6 +3,8 @@ import type { DuckDBAppender } from "@duckdb/node-api";
 import { openConnection, queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
+  expireReports,
+  expiresAt,
   isDownloadComplete,
   quotedSchema,
   schemaName,
@@ -93,14 +95,20 @@ export async function downloadReport(args: unknown) {
   return guard(async () => {
     const { report_code, force } = inputSchema.parse(args);
     assertValidReportCode(report_code);
+    // Drop expired reports first, so an expired copy of this one is downloaded fresh.
+    await expireReports();
 
     if (!force && (await isDownloadComplete(report_code))) {
       const counts = await tableCounts(report_code);
+      const [{ downloaded_at }] = await queryRows(
+        `SELECT downloaded_at FROM ${q(schemaName(report_code))}.report_details`,
+      );
       return ok({
         status: "already_downloaded",
         report_code,
         schema: schemaName(report_code),
         schema_version: SCHEMA_VERSION,
+        expires_at: isoOrNull(expiresAt(Number(downloaded_at))),
         tables: counts,
         hint: "Pass force=true to re-download. Use get_report_details to inspect, or execute_readonly_query to analyze.",
       });
@@ -126,6 +134,7 @@ export async function downloadReport(args: unknown) {
     const schema = schemaName(report_code);
     const conn = await openConnection();
     let totalEvents = 0;
+    const downloadedAt = Date.now();
     const fights = report.fights ?? [];
     try {
       await conn.run("BEGIN TRANSACTION");
@@ -149,8 +158,8 @@ export async function downloadReport(args: unknown) {
             keystone_level: f.keystoneLevel,
             kill: f.kill,
             fight_percentage: f.fightPercentage,
-            start_time: f.startTime,
-            end_time: f.endTime,
+            start_time: bigint(f.startTime),
+            end_time: bigint(f.endTime),
           },
         );
       }
@@ -235,12 +244,12 @@ export async function downloadReport(args: unknown) {
           zone_id: report.zone?.id ?? null,
           zone_name: report.zone?.name ?? null,
           region: report.region?.slug ?? null,
-          start_time: report.startTime,
-          end_time: report.endTime,
+          start_time: bigint(report.startTime),
+          end_time: bigint(report.endTime),
           num_fights: fights.length,
-          total_events: totalEvents,
+          total_events: bigint(totalEvents),
           schema_version: SCHEMA_VERSION,
-          downloaded_at: Date.now(),
+          downloaded_at: bigint(downloadedAt),
         },
       );
 
@@ -263,10 +272,23 @@ export async function downloadReport(args: unknown) {
       title: report.title,
       zone: report.zone?.name ?? null,
       num_fights: fights.length,
+      expires_at: isoOrNull(expiresAt(downloadedAt)),
       tables: counts,
       hint: "Use get_report_details to see the schema + semantic guide, then execute_readonly_query to analyze.",
     });
   });
+}
+
+/**
+ * Bind a BIGINT parameter. A plain JS number is bound as a 32-bit INTEGER and wraps, which
+ * corrupts epoch-millisecond values; a bigint binds as BIGINT.
+ */
+function bigint(value: number): bigint {
+  return BigInt(Math.trunc(value));
+}
+
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
 }
 
 /** Quote a schema identifier already known to be safe (alphanumeric-derived). */

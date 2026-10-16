@@ -132,6 +132,7 @@ config, e.g. `env` in `.mcp.json`. This repo's `.mcp.json` sets `WCL_DB_PATH` fo
 | `WCL_USER_ID` | the logged-in user | Numeric id from your profile URL, for `find_reports` without login |
 | `WCL_DB_PATH` | per-user data dir (below) | DuckDB file location |
 | `WCL_AUTH_PATH` | `~/.config/wcl-mcp/auth.json` | Where login tokens are stored |
+| `WCL_REPORT_TTL_DAYS` | `7` | Days a downloaded report is kept before it's deleted; `0` keeps reports forever |
 
 The DuckDB file defaults to a per-user data directory, so downloaded reports and game data persist
 across projects and sessions whatever directory the server is launched from:
@@ -250,6 +251,11 @@ ORDER BY 1;
 - `get_pull_insights` calls `api.wipefest.gg`, the undocumented backend of wipefest.gg (no auth
   needed for public reports). It only covers raid bosses Wipefest has mechanic configs for, and
   may break if Wipefest changes its API. The report need not be downloaded locally.
+- Downloaded reports are deleted `WCL_REPORT_TTL_DAYS` (default 7) days after download, checked
+  at server startup and on each `download_report`; the agent just downloads them again. Shared game
+  data (`gamedata`) and MDT data never expire.
 - Schema version is `v3`; the `_v<N>` suffix on each report schema allows future layout changes.
+  Reports downloaded under an older version must be downloaded again (tools say so), and the old
+  copies are cleaned up by the TTL.
 
 See `PLAN.md` for the full design.

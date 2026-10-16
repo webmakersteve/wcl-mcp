@@ -1,4 +1,5 @@
 import { quotedIdentifier } from "@duckdb/node-api";
+import { getConfig } from "../config.js";
 import { queryRows, run } from "./duck.js";
 
 /**
@@ -66,4 +67,71 @@ export async function dropSchema(
     await run(`DROP SCHEMA ${quotedSchema(code, version)} CASCADE`);
   }
   return existed;
+}
+
+/** Matches a per-report schema name, capturing the report code and version. */
+const REPORT_SCHEMA_RE = /^r_([A-Za-z0-9]{1,32})_v(\d+)$/;
+
+/** Versions (other than the current one) this report is still stored under locally. */
+async function olderVersions(code: string): Promise<number[]> {
+  const rows = await queryRows(
+    "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE $pattern",
+    { pattern: `r_${code}_v%` },
+  );
+  return rows
+    .map((r) => REPORT_SCHEMA_RE.exec(String(r.schema_name)))
+    .filter((m): m is RegExpExecArray => m !== null && m[1] === code)
+    .map((m) => Number(m[2]))
+    .filter((v) => v !== SCHEMA_VERSION);
+}
+
+/**
+ * Error text for a report missing from the current schema version: tells the agent whether it
+ * was never downloaded, or was downloaded with an older layout and needs downloading again.
+ */
+export async function notDownloadedMessage(code: string): Promise<string> {
+  const older = await olderVersions(code);
+  if (older.length > 0) {
+    return (
+      `Report '${code}' was downloaded with an older local schema (v${Math.max(...older)}; ` +
+      `current is v${SCHEMA_VERSION}) and must be downloaded again. ` +
+      `Call download_report('${code}') to upgrade it.`
+    );
+  }
+  return `Report '${code}' is not downloaded. Call download_report('${code}') first.`;
+}
+
+/** When a downloaded report expires under the configured TTL (epoch ms), or null if never. */
+export function expiresAt(downloadedAt: number): number | null {
+  const { reportTtlDays } = getConfig();
+  return reportTtlDays > 0 ? downloadedAt + reportTtlDays * 86_400_000 : null;
+}
+
+/**
+ * Drop every report schema (any version) downloaded longer ago than the TTL. Schemas
+ * without a report_details row are incomplete or unreadable leftovers and are dropped too.
+ * Shared schemas (gamedata, mdt) never match the report naming pattern. Returns dropped names.
+ */
+export async function expireReports(now = Date.now()): Promise<string[]> {
+  const { reportTtlDays } = getConfig();
+  if (reportTtlDays <= 0) return [];
+  const cutoff = now - reportTtlDays * 86_400_000;
+
+  const schemas = await queryRows("SELECT schema_name FROM information_schema.schemata");
+  const dropped: string[] = [];
+  for (const { schema_name } of schemas) {
+    const name = String(schema_name);
+    if (!REPORT_SCHEMA_RE.test(name)) continue;
+    const ident = quotedIdentifier(name);
+    const rows = await queryRows(
+      `SELECT max(downloaded_at) AS downloaded_at FROM ${ident}.report_details`,
+    ).catch(() => []);
+    const downloadedAt = rows[0]?.downloaded_at;
+    if (downloadedAt !== null && downloadedAt !== undefined && Number(downloadedAt) >= cutoff) {
+      continue;
+    }
+    await run(`DROP SCHEMA ${ident} CASCADE`);
+    dropped.push(name);
+  }
+  return dropped;
 }

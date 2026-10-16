@@ -3,9 +3,8 @@ import { openConnection, queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
   isDownloadComplete,
+  notDownloadedMessage,
   quotedSchema,
-  schemaExists,
-  SCHEMA_VERSION,
 } from "../db/schema.js";
 import { decodeMdtString } from "../mdt/decode.js";
 import { ensureMdtData, getMdtDungeon } from "../mdt/data.js";
@@ -40,13 +39,7 @@ export async function importMdtRoute(args: unknown) {
     assertValidReportCode(report_code);
 
     if (!(await isDownloadComplete(report_code))) {
-      const old = SCHEMA_VERSION > 1 && (await schemaExists(report_code, SCHEMA_VERSION - 1));
-      return fail(
-        old
-          ? `Report '${report_code}' was downloaded with an older schema. ` +
-              `Call download_report('${report_code}') again to upgrade it.`
-          : `Report '${report_code}' is not downloaded. Call download_report('${report_code}') first.`,
-      );
+      return fail(await notDownloadedMessage(report_code));
     }
 
     const route = decodeMdtString(mdt_string);

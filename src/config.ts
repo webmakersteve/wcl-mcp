@@ -13,6 +13,9 @@ const APP_DIR = "wcl-mcp";
  */
 const DEFAULT_CLIENT_ID = "01a145bb-9826-70ca-b69c-d6d99f5f4974";
 
+/** Downloaded reports are kept this long unless WCL_REPORT_TTL_DAYS overrides it. */
+const DEFAULT_REPORT_TTL_DAYS = 7;
+
 /** Expand a leading `~` so env overrides like `~/wcl.duckdb` work. */
 function expandHome(path: string): string {
   return path === "~" || path.startsWith("~/") || path.startsWith("~\\")
@@ -61,6 +64,8 @@ export interface Config {
   redirectUri: string;
   /** Where `wcl-mcp login` stores the user's OAuth tokens. */
   authPath: string;
+  /** Downloaded reports are dropped this many days after download; 0 keeps them forever. */
+  reportTtlDays: number;
 }
 
 let cached: Config | undefined;
@@ -98,6 +103,12 @@ export function getConfig(): Config {
     ? resolve(expandHome(authPathRaw))
     : join(defaultConfigDir(), "auth.json");
 
-  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath };
+  const ttlRaw = process.env.WCL_REPORT_TTL_DAYS?.trim();
+  const reportTtlDays = ttlRaw ? Number(ttlRaw) : DEFAULT_REPORT_TTL_DAYS;
+  if (!Number.isFinite(reportTtlDays) || reportTtlDays < 0) {
+    throw new Error(`WCL_REPORT_TTL_DAYS must be a non-negative number, got: ${ttlRaw}`);
+  }
+
+  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath, reportTtlDays };
   return cached;
 }

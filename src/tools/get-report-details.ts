@@ -3,6 +3,7 @@ import { queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
   quotedSchema,
+  notDownloadedMessage,
   schemaExists,
   schemaName,
   SCHEMA_VERSION,
@@ -35,9 +36,7 @@ export async function getReportDetails(args: unknown) {
     assertValidReportCode(report_code);
 
     if (!(await schemaExists(report_code))) {
-      return fail(
-        `Report '${report_code}' is not downloaded. Call download_report('${report_code}') first.`,
-      );
+      return fail(await notDownloadedMessage(report_code));
     }
 
     const schema = quotedSchema(report_code);

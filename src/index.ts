@@ -22,6 +22,7 @@ import { importMdtRoute, importMdtRouteShape } from "./tools/import-mdt-route.js
 import { authStatus, authStatusShape, login, loginShape, logout, logoutShape } from "./tools/auth.js";
 import { runCli } from "./cli.js";
 import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
+import { expireReports } from "./db/schema.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -105,7 +106,9 @@ server.registerTool(
     title: "Download report",
     description:
       "Fetch a Warcraft Logs report (full event stream + fights + actors) and materialize it into " +
-      "a local DuckDB schema for analysis. Idempotent: re-running is a no-op unless force=true.",
+      "a local DuckDB schema for analysis. Idempotent: re-running is a no-op unless force=true. " +
+      "Local copies expire (are deleted) a set time after download — 7 days by default, see " +
+      "expires_at in the result — after which this tool must be called again.",
     inputSchema: downloadReportShape,
   },
   (args) => downloadReport(args),
@@ -214,6 +217,12 @@ async function main(): Promise<void> {
   await server.connect(transport);
   // stderr is safe for logs; stdout is reserved for the MCP protocol.
   console.error("wcl-mcp server running on stdio");
+  // Drop reports past their TTL; a failure here must not take the server down.
+  expireReports()
+    .then((dropped) => {
+      if (dropped.length > 0) console.error(`wcl-mcp: expired ${dropped.length} local report(s)`);
+    })
+    .catch((err) => console.error("wcl-mcp: report expiry failed:", err));
 }
 
 main().catch((err) => {
