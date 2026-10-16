@@ -19,6 +19,11 @@ function getInstance(): Promise<DuckDBInstance> {
       mkdirSync(dirname(dbPath), { recursive: true });
       return DuckDBInstance.create(dbPath, { enable_external_access: "false" });
     })();
+    // Don't cache a failed open (e.g. another process holding the file lock);
+    // the next call retries.
+    instancePromise.catch(() => {
+      instancePromise = undefined;
+    });
   }
   return instancePromise;
 }
@@ -27,6 +32,9 @@ function getInstance(): Promise<DuckDBInstance> {
 export function getConnection(): Promise<DuckDBConnection> {
   if (!connectionPromise) {
     connectionPromise = getInstance().then((instance) => instance.connect());
+    connectionPromise.catch(() => {
+      connectionPromise = undefined;
+    });
   }
   return connectionPromise;
 }
