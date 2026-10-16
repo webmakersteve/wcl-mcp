@@ -79,24 +79,57 @@ the time those mobs were being fought (the union of each mob's first-hit-to-deat
 - Logs carry no positions, so same-npc mobs in neighbouring pulls can be swapped. Summons and boss
   adds that MDT doesn't list are attributed to their summoner's pull, or else the active pull.
 
-## Setup
+## Install as a Claude Code plugin
+
+```
+/plugin install wcl-mcp --marketplace webmakersteve/wcl-mcp
+```
+
+(Or in two steps: `/plugin marketplace add webmakersteve/wcl-mcp`, then
+`/plugin install wcl-mcp@wcl-mcp`.) No configuration is needed: ask Claude to log you in to
+Warcraft Logs, and the database lives in the per-user data directory described below. Requires
+Node.js 20+ on your PATH; Claude Code installs the npm dependencies (~120 MB, mostly DuckDB's
+native binary) when it installs the plugin.
+
+### Releases
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please), so
+**commit messages must follow [Conventional Commits](https://www.conventionalcommits.org)**
+(`feat:`, `fix:`, `chore:`, `feat!:` for breaking changes, ...):
+
+1. Every push to `main` updates a release PR that bumps the version in `package.json`,
+   `package-lock.json`, `.claude-plugin/plugin.json` and `src/index.ts`, and updates `CHANGELOG.md`.
+   `feat` and `fix` commits make a release; `chore`, `docs` and the like don't.
+2. Merging the release PR tags `vX.Y.Z` and publishes the GitHub release.
+3. The publish job then builds `dist/`, packages the plugin zip (`scripts/package-plugin.sh`),
+   installs and smoke-tests it the way Claude Code would (`scripts/smoke-test.mjs`), attaches it to
+   the release, and commits its URL and `sha256` to `.claude-plugin/marketplace.json`.
+
+The repo is the marketplace; the plugin itself is the release zip (an `archive` source), so
+`dist/` is never committed. Users get an update when the plugin's `version` changes. Pull
+requests run the same build, packaging and smoke test (`.github/workflows/ci.yml`).
+
+To test a package locally: `npm run build && scripts/package-plugin.sh /tmp/wcl-release`.
+
+## Setup (from source)
 
 ```bash
 npm install
 npm run build
 ```
 
-The server ships with the wcl-mcp Warcraft Logs API client id built in. To use your own client
-instead, create a **v2 API client** at https://www.warcraftlogs.com/api/clients/ and copy
-`.env.example` to `.env`:
+Nothing needs configuring. Every setting is an optional environment variable, read only from the
+server's process environment (there is no `.env` loader), so set them in your MCP client's
+config, e.g. `env` in `.mcp.json`. This repo's `.mcp.json` sets `WCL_DB_PATH` for development.
 
-```
-WCL_CLIENT_ID=...        # optional; overrides the built-in client id
-WCL_CLIENT_SECRET=...
-WCL_REDIRECT_URI=http://localhost:8888/redirect   # for login; must match the API client
-WCL_USER_ID=...          # numeric id from your profile URL; only for find_reports without login
-WCL_DB_PATH=./data/wcl.duckdb   # optional override; see below
-```
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WCL_CLIENT_ID` | built-in wcl-mcp client | Use your own [v2 API client](https://www.warcraftlogs.com/api/clients/) |
+| `WCL_CLIENT_SECRET` | unset | Public-report access without logging in (client credentials) |
+| `WCL_REDIRECT_URI` | `http://localhost:8888/redirect` | Login redirect; must match one registered on the client |
+| `WCL_USER_ID` | the logged-in user | Numeric id from your profile URL, for `find_reports` without login |
+| `WCL_DB_PATH` | per-user data dir (below) | DuckDB file location |
+| `WCL_AUTH_PATH` | `~/.config/wcl-mcp/auth.json` | Where login tokens are stored |
 
 The DuckDB file defaults to a per-user data directory, so downloaded reports and game data persist
 across projects and sessions whatever directory the server is launched from:

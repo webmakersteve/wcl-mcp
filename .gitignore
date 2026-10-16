@@ -2,7 +2,7 @@
 node_modules/
 .pnpm-store/
 
-# Build output
+# Build output (the plugin ships dist/ in its release zip; see .github/workflows/release.yml)
 dist/
 build/
 *.tsbuildinfo
@@ -16,7 +16,6 @@ data/
 # Environment / secrets
 .env
 .env.*
-!.env.example
 
 # Logs
 logs/

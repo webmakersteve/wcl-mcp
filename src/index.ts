@@ -25,7 +25,7 @@ import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
-  version: "0.1.0",
+  version: "0.1.0", // x-release-please-version
 });
 
 const loginTool = server.registerTool(

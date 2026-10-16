@@ -1,0 +1,93 @@
+name: Release
+
+# Every push to main updates release-please's release PR (version bump + CHANGELOG from
+# conventional commits). Merging that PR tags and publishes the GitHub release; the publish job
+# then attaches the plugin zip and points the marketplace at it.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Package plugin zip
+        id: package
+        run: |
+          zip_path="$(scripts/package-plugin.sh "$RUNNER_TEMP/release")"
+          echo "zip_path=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$(basename "$zip_path")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$zip_path" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # Install the zip the way Claude Code does (lockfile install, no lifecycle scripts) and
+      # start the server from it, so a broken release never reaches the marketplace.
+      - name: Smoke-test the packaged plugin
+        run: |
+          root="$RUNNER_TEMP/installed"
+          mkdir -p "$root"
+          unzip -q "${{ steps.package.outputs.zip_path }}" -d "$root"
+          (cd "$root" && npm ci --ignore-scripts --no-audit --no-fund)
+          node scripts/smoke-test.mjs "$root"
+
+      - name: Attach zip to the release
+        run: gh release upload "$TAG" "${{ steps.package.outputs.zip_path }}" --clobber
+
+      - name: Point the marketplace at the new release
+        env:
+          ZIP_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.release-please.outputs.tag_name }}/${{ steps.package.outputs.zip_name }}
+          ZIP_SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          jq --arg url "$ZIP_URL" --arg sha "$ZIP_SHA256" \
+            '(.plugins[] | select(.name == "wcl-mcp") | .source) = {source: "archive", url: $url, sha256: $sha}' \
+            .claude-plugin/marketplace.json > "$RUNNER_TEMP/marketplace.json"
+          mv "$RUNNER_TEMP/marketplace.json" .claude-plugin/marketplace.json
+          if git diff --quiet; then
+            echo "marketplace.json already points at $ZIP_URL"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: point marketplace at $TAG"
+          git push origin main

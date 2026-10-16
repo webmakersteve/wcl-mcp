@@ -1,0 +1,16 @@
+{
+  "name": "wcl-mcp",
+  "description": "Warcraft Logs analysis for Claude Code.",
+  "owner": {
+    "name": "webmakersteve",
+    "url": "https://github.com/webmakersteve"
+  },
+  "plugins": [
+    {
+      "name": "wcl-mcp",
+      "source": "./",
+      "description": "Analyze Warcraft Logs reports (including private ones) with a local DuckDB.",
+      "category": "gaming"
+    }
+  ]
+}

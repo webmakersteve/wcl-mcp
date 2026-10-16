@@ -1,38 +1,9 @@
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-/**
- * Minimal .env loader. We avoid a runtime dependency: read .env once at startup
- * and populate any keys that aren't already set in the real environment.
- * (Real env vars always win over the file.)
- */
-function loadDotEnv(): void {
-  const path = resolve(process.cwd(), ".env");
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return; // no .env file — fine, rely on the process environment
-  }
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
-
-loadDotEnv();
+// Configuration comes only from the process environment (e.g. `env` in .mcp.json). There's
+// deliberately no .env loader: as a plugin, the server runs in the user's project directory,
+// and that project's .env isn't ours.
 
 const APP_DIR = "wcl-mcp";
 

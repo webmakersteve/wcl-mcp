@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Package and smoke-test the plugin
+        run: |
+          zip_path="$(scripts/package-plugin.sh "$RUNNER_TEMP/release")"
+          root="$RUNNER_TEMP/installed"
+          mkdir -p "$root"
+          unzip -q "$zip_path" -d "$root"
+          (cd "$root" && npm ci --ignore-scripts --no-audit --no-fund)
+          node scripts/smoke-test.mjs "$root"

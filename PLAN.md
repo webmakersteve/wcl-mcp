@@ -36,15 +36,13 @@ its architecture — our tool surface is deliberately minimal and DuckDB-centric
 - **DuckDB:** `@duckdb/node-api` (DuckDB Node "Neo"). `DuckDBInstance.create(path)` →
   `instance.connect()`. Bulk-load events with the **Appender** API; read with
   `connection.runAndReadAll(sql)` → `reader.getRowObjects()`.
-- **Validation:** `zod`. Env via `process.env` (+ a tiny `.env` loader; Node 25 supports `--env-file`,
-  but we'll load explicitly for robustness).
+- **Validation:** `zod`. Env via `process.env` only (set by the MCP client; no `.env` loader, since as a plugin the server runs in the user's project).
 
 ## Project structure
 ```
 wcl-mcp/
   package.json            # type: module, bin: wcl-mcp -> dist/index.js, scripts: build/dev/start
   tsconfig.json           # NodeNext, ES2022, strict, outDir dist
-  .env.example            # WCL_CLIENT_ID, WCL_CLIENT_SECRET, WCL_USER_ID, WCL_DB_PATH
   .gitignore              # node_modules, dist, data/, .env
   README.md               # setup, env, MCP client config snippet
   PLAN.md                 # copy of this plan (created as step 0 — user asked to persist it)
@@ -152,11 +150,11 @@ INSTALL/LOAD/SET/CALL/EXPORT). The per-report `search_path` scoping also limits 
 - `src/db/seeds.ts` — seed DDL + semantic registry (the heart of the "context" value).
 - `src/db/schema.ts`, `src/db/readonly.ts` — schema versioning + SQL safety.
 - `src/tools/*.ts` — the 5 tools (download is the most substantial).
-- `src/index.ts`, `src/config.ts`, `package.json`, `tsconfig.json`, `.env.example`, `README.md`, `PLAN.md`.
+- `src/index.ts`, `src/config.ts`, `package.json`, `tsconfig.json`, `README.md`, `PLAN.md`.
 
 ## Verification
 1. `npm install` then `npm run build` (clean `tsc`).
-2. Create `.env` from `.env.example` with real `WCL_CLIENT_ID`/`WCL_CLIENT_SECRET` (+ `WCL_USER_ID`).
+2. Set any overrides (`WCL_*`) in the MCP client config's `env`; none are required.
 3. Smoke-test with the MCP Inspector: `npx @modelcontextprotocol/inspector node dist/index.js`.
    - `find_reports` (your uploads) → returns report codes.
    - `download_report` with a real code → creates `r_<code>_v1`, reports row counts.
