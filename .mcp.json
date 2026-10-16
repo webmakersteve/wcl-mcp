@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wcl": {
+      "command": "npx",
+      "args": ["tsx", "src/index.ts"],
+      "env": {
+        "WCL_DB_PATH": "./data/wcl.duckdb"
+      }
+    }
+  }
+}
