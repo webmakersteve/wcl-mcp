@@ -7,6 +7,7 @@ import {
 } from "../db/schema.js";
 import { assertReadOnly, assertWithinSchemas, ReadOnlyViolation } from "../db/readonly.js";
 import { GAMEDATA_SCHEMA } from "../gamedata/tables.js";
+import { MDT_SCHEMA } from "../mdt/data.js";
 import { guard, ok, fail } from "./result.js";
 
 /** Cap returned rows so a missing LIMIT can't flood the context window. */
@@ -22,7 +23,8 @@ export const executeReadonlyQueryShape = {
       "A single read-only DuckDB SQL statement (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/...). " +
         "Reference the seed tables unqualified (fight_events, fights, actors, report_details) — " +
         "search_path is scoped to this report. Spell data (once synced) is in the shared gamedata " +
-        "schema, e.g. JOIN gamedata.spell s ON s.spell_id = fight_events.ability_game_id.",
+        "schema, e.g. JOIN gamedata.spell s ON s.spell_id = fight_events.ability_game_id. After " +
+        "import_mdt_route, route_* tables are here too, and MDT dungeon data is in mdt.<table>.",
     ),
 };
 
@@ -56,7 +58,7 @@ export async function executeReadonlyQuery(args: unknown) {
       // Scope unqualified table names to this report's schema.
       await conn.run(`SET search_path = '${schema}'`);
       try {
-        await assertWithinSchemas(conn, statement, [schema, GAMEDATA_SCHEMA]);
+        await assertWithinSchemas(conn, statement, [schema, GAMEDATA_SCHEMA, MDT_SCHEMA]);
       } catch (err) {
         if (err instanceof ReadOnlyViolation) {
           return fail(`Rejected (read-only guard): ${err.message}`);

@@ -62,6 +62,8 @@ export const SEED_TABLES: Record<string, TableSpec> = {
       "One row per actor (player, pet, NPC) seen in the report's master data. Resolve event source/target ids to names here.",
     columns: {
       actor_id: { type: "INTEGER", description: "Actor id, unique within the report.", usage: "Join target for fight_events.source_id and target_id." },
+      game_id: { type: "BIGINT", description: "In-game id: the creature (NPC) id for NPCs and bosses, 0 for players.", usage: "Matches mdt.enemies.npc_id. One NPC type is one actor; its individual mobs are distinguished by fight_events.source_instance/target_instance." },
+      pet_owner: { type: "INTEGER", description: "For pets, the owning actor_id; null otherwise.", usage: "Attribute pet damage to its player." },
       name: { type: "VARCHAR", description: "Actor name (character, pet, or NPC name)." },
       type: { type: "VARCHAR", description: "High-level type: 'Player', 'Pet', 'NPC', 'Boss'." },
       sub_type: { type: "VARCHAR", description: "For players, the class (e.g. 'Mage'); otherwise a finer type." },
@@ -79,6 +81,8 @@ export const SEED_TABLES: Record<string, TableSpec> = {
       type: { type: "VARCHAR", description: "Event type, e.g. 'damage', 'heal', 'cast', 'begincast', 'applybuff', 'death', 'resourcechange'.", usage: "Filter by event kind. Damage events are type='damage'." },
       source_id: { type: "INTEGER", description: "Actor id that caused the event.", usage: "Join to actors.actor_id to get the source name/class." },
       target_id: { type: "INTEGER", description: "Actor id the event targeted.", usage: "Join to actors.actor_id to get the target name." },
+      source_instance: { type: "INTEGER", description: "Which individual mob of source_id's NPC type (1-based); null for players and single-instance actors.", usage: "Identify one mob as (source_id, coalesce(source_instance, 1))." },
+      target_instance: { type: "INTEGER", description: "Which individual mob of target_id's NPC type (1-based); null for players and single-instance actors.", usage: "Identify one mob as (target_id, coalesce(target_instance, 1)); joins to route_units (actor_id, instance)." },
       ability_game_id: { type: "BIGINT", description: "Game spell/ability id involved in the event (null for some events)." },
       amount: { type: "BIGINT", description: "Effect magnitude: damage dealt, healing done, resource gained, etc. (null when not applicable)." },
       hit_type: { type: "INTEGER", description: "Hit classification code (e.g. crit, hit, miss); event-type dependent." },

@@ -10,6 +10,8 @@ import {
 import { SEED_TABLES } from "../db/seeds.js";
 import { getGameDataStatus } from "../gamedata/sync.js";
 import { gameDataTableDocs } from "../gamedata/tables.js";
+import { MDT_SCHEMA, mdtTableDocs } from "../mdt/data.js";
+import { ROUTE_TABLES } from "../mdt/route-tables.js";
 import { guard, ok, fail } from "./result.js";
 
 export const getReportDetailsShape = {
@@ -41,7 +43,19 @@ export async function getReportDetails(args: unknown) {
     const schema = quotedSchema(report_code);
     const tables = [];
 
-    for (const [table, spec] of Object.entries(SEED_TABLES)) {
+    // Route tables exist only once import_mdt_route has run for this report.
+    const existing = new Set(
+      (
+        await queryRows(
+          "SELECT table_name FROM information_schema.tables WHERE table_schema = $schema",
+          { schema: schemaName(report_code) },
+        )
+      ).map((r) => String(r.table_name)),
+    );
+    const documented = { ...SEED_TABLES, ...ROUTE_TABLES };
+
+    for (const [table, spec] of Object.entries(documented)) {
+      if (!existing.has(table)) continue;
       const ref = `${schema}.${qIdent(table)}`;
 
       const countRows = await queryRows(`SELECT count(*) AS n FROM ${ref}`);
@@ -96,6 +110,16 @@ export async function getReportDetails(args: unknown) {
             synced: false,
             hint: "Spell data isn't downloaded yet. lookup_spells fetches it on first use, or call sync_game_data.",
           },
+      ...(existing.has("route_pulls")
+        ? {
+            mdt_data: {
+              query_hint:
+                `MDT dungeon data, queryable as ${MDT_SCHEMA}.<table>. route_planned_units ` +
+                `(enemy_idx, clone_idx) joins ${MDT_SCHEMA}.spawns; actors.game_id joins ${MDT_SCHEMA}.enemies.npc_id.`,
+              tables: mdtTableDocs(),
+            },
+          }
+        : {}),
     });
   });
 }

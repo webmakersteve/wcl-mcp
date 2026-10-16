@@ -2,6 +2,10 @@
 
 export interface WclActor {
   id: number;
+  /** Creature id for NPCs, spell id for some pets, 0 for players. */
+  gameID: number | null;
+  /** Owning actor id for pets. */
+  petOwner: number | null;
   name: string;
   type: string | null;
   subType: string | null;
@@ -46,6 +50,8 @@ export interface WclEvent {
   type: string;
   sourceID?: number;
   targetID?: number;
+  sourceInstance?: number;
+  targetInstance?: number;
   abilityGameID?: number;
   amount?: number;
   hitType?: number;

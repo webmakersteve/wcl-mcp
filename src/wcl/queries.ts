@@ -39,6 +39,8 @@ export const REPORT_META_QUERY = /* GraphQL */ `
         masterData {
           actors {
             id
+            gameID
+            petOwner
             name
             type
             subType

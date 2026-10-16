@@ -18,6 +18,7 @@ import {
 import { lookupSpells, lookupSpellsShape } from "./tools/lookup-spells.js";
 import { syncGameDataTool, syncGameDataShape } from "./tools/sync-game-data.js";
 import { getPullInsights, getPullInsightsShape } from "./tools/get-pull-insights.js";
+import { importMdtRoute, importMdtRouteShape } from "./tools/import-mdt-route.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -112,6 +113,24 @@ server.registerTool(
     inputSchema: getPullInsightsShape,
   },
   (args) => getPullInsights(args),
+);
+
+server.registerTool(
+  "import_mdt_route",
+  {
+    title: "Import MDT route",
+    description:
+      "Match a Mythic Dungeon Tools route (MDT export string) against a downloaded Mythic+ run. " +
+      "Re-slices the run into the route's pulls by assigning each enemy fought to its planned " +
+      "pull, so per-pull damage/DPS isn't distorted by chained pulls the way WCL's time-based " +
+      "pulls are: DPS is damage to a pull's own mobs over the time they were being fought. Wipes " +
+      "split pulls into attempts (retries cover only the mobs still alive). Returns a faithfulness " +
+      "summary (planned vs fought mobs and forces, off-route kills, wipes, skipped/out-of-order/" +
+      "chained/merged/split pulls) and writes route_* tables for SQL. Use " +
+      "it to judge how closely a group followed its route and to compare pulls on equal terms.",
+    inputSchema: importMdtRouteShape,
+  },
+  (args) => importMdtRoute(args),
 );
 
 server.registerTool(

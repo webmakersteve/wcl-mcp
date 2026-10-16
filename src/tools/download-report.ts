@@ -50,6 +50,8 @@ function appendEvent(appender: DuckDBAppender, fightId: number, ev: WclEvent): v
   appender.appendVarchar(String(ev.type));
   appendNullableInt(appender, ev.sourceID);
   appendNullableInt(appender, ev.targetID);
+  appendNullableInt(appender, ev.sourceInstance);
+  appendNullableInt(appender, ev.targetInstance);
   appendNullableBigInt(appender, ev.abilityGameID);
   appendNullableBigInt(appender, ev.amount);
   appendNullableInt(appender, ev.hitType);
@@ -124,9 +126,11 @@ export async function downloadReport(args: unknown) {
       const actors = report.masterData?.actors ?? [];
       for (const a of actors) {
         await conn.run(
-          `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $name, $type, $sub_type, $server)`,
+          `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $game_id, $pet_owner, $name, $type, $sub_type, $server)`,
           {
             actor_id: a.id,
+            game_id: a.gameID,
+            pet_owner: a.petOwner,
             name: a.name,
             type: a.type,
             sub_type: a.subType,
