@@ -17,6 +17,7 @@ import {
 } from "./tools/execute-readonly-query.js";
 import { lookupSpells, lookupSpellsShape } from "./tools/lookup-spells.js";
 import { syncGameDataTool, syncGameDataShape } from "./tools/sync-game-data.js";
+import { getPullInsights, getPullInsightsShape } from "./tools/get-pull-insights.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -95,6 +96,22 @@ server.registerTool(
     inputSchema: lookupSpellsShape,
   },
   (args) => lookupSpells(args),
+);
+
+server.registerTool(
+  "get_pull_insights",
+  {
+    title: "Get pull insights",
+    description:
+      "Explain what went wrong on a raid boss pull using Wipefest's per-boss mechanic analysis: " +
+      "deaths by ability, avoidable damage taken, failed soaks/interrupts/tank swaps, with the " +
+      "worst-offending players and the spell ids involved. Also shows each mechanic as of the " +
+      "first death, to separate the cause of a wipe from its fallout. Use it as the starting " +
+      "point for reviewing a pull, then query the spell ids in the downloaded report to dig " +
+      "deeper. Raid encounters only (not Mythic+); calls the public Wipefest site.",
+    inputSchema: getPullInsightsShape,
+  },
+  (args) => getPullInsights(args),
 );
 
 server.registerTool(

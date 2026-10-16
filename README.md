@@ -33,6 +33,7 @@ It runs locally because it uses your Warcraft Logs API credentials.
 | `delete_local_report` | Drop a report's local schema/tables. |
 | `lookup_spells` | Spell names, rendered descriptions, and mechanics (cooldown, charges, cost, duration...) by id or name. |
 | `sync_game_data` | Download spell data for the latest live build (automatic on first `lookup_spells`). |
+| `get_pull_insights` | What went wrong on a raid pull, via Wipefest's per-boss mechanic analysis: deaths, avoidable damage, failed mechanics, worst offenders, spell ids — whole fight vs. up to the first death. |
 
 ## Spell data
 
@@ -122,6 +123,9 @@ LIMIT 10;
 - DuckDB runs with `enable_external_access=false`, so queries can't read local files or the network
   (`read_csv`, `read_text`, `glob`, `ATTACH`, ...). Only the downloaded reports are reachable.
 - Player-name search isn't supported by the WCL API; download a report and filter via SQL instead.
+- `get_pull_insights` calls `api.wipefest.gg`, the undocumented backend of wipefest.gg (no auth
+  needed for public reports). It only covers raid bosses Wipefest has mechanic configs for, and
+  may break if Wipefest changes its API. The report need not be downloaded locally.
 - Schema version is `v1`; the `_v<N>` suffix on each report schema allows future layout changes.
 
 See `PLAN.md` for the full design.
