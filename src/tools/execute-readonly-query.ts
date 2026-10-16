@@ -3,6 +3,8 @@ import { openConnection } from "../db/duck.js";
 import {
   assertValidReportCode,
   notDownloadedMessage,
+  routeSchemaExists,
+  routeSchemaName,
   schemaExists,
   schemaName,
 } from "../db/schema.js";
@@ -51,14 +53,17 @@ export async function executeReadonlyQuery(args: unknown) {
       throw err;
     }
 
-    const schema = schemaName(report_code);
+    // The report's log schema, plus its route schema once a route has been imported
+    // (search_path rejects a schema that doesn't exist).
+    const schemas = [schemaName(report_code)];
+    if (await routeSchemaExists(report_code)) schemas.push(routeSchemaName(report_code));
     // A per-call connection keeps search_path from leaking between concurrent calls.
     const conn = await openConnection();
     try {
-      // Scope unqualified table names to this report's schema.
-      await conn.run(`SET search_path = '${schema}'`);
+      // Scope unqualified table names to this report's schemas.
+      await conn.run(`SET search_path = '${schemas.join(",")}'`);
       try {
-        await assertWithinSchemas(conn, statement, [schema, GAMEDATA_SCHEMA, MDT_SCHEMA]);
+        await assertWithinSchemas(conn, statement, [...schemas, GAMEDATA_SCHEMA, MDT_SCHEMA]);
       } catch (err) {
         if (err instanceof ReadOnlyViolation) {
           return fail(`Rejected (read-only guard): ${err.message}`);

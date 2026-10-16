@@ -8,6 +8,13 @@ import { queryRows, run } from "./duck.js";
  */
 export const SCHEMA_VERSION = 3;
 
+/**
+ * Version of the per-report route schema written by import_mdt_route, kept separate from
+ * SCHEMA_VERSION so a log schema change doesn't strand imported routes (and vice versa).
+ * Bump when the route table layout changes.
+ */
+export const ROUTE_SCHEMA_VERSION = 1;
+
 /** WCL report codes are alphanumeric (a–z, A–Z, 0–9), typically 16 chars. */
 const REPORT_CODE_RE = /^[A-Za-z0-9]{1,32}$/;
 
@@ -69,8 +76,36 @@ export async function dropSchema(
   return existed;
 }
 
-/** Matches a per-report schema name, capturing the report code and version. */
-const REPORT_SCHEMA_RE = /^r_([A-Za-z0-9]{1,32})_v(\d+)$/;
+/** Matches a per-report log schema name, capturing the report code and version. */
+export const REPORT_SCHEMA_RE = /^r_([A-Za-z0-9]{1,32})_v(\d+)$/;
+
+/** Matches a per-report route schema name, capturing the report code and version. */
+const ROUTE_SCHEMA_RE = /^route_([A-Za-z0-9]{1,32})_v(\d+)$/;
+
+/** Derive the per-report route schema name, e.g. `route_aBcD1234_v1`. */
+export function routeSchemaName(code: string, version = ROUTE_SCHEMA_VERSION): string {
+  assertValidReportCode(code);
+  return `route_${code}_v${version}`;
+}
+
+export function quotedRouteSchema(code: string, version = ROUTE_SCHEMA_VERSION): string {
+  return quotedIdentifier(routeSchemaName(code, version));
+}
+
+export async function routeSchemaExists(code: string): Promise<boolean> {
+  const rows = await queryRows(
+    "SELECT 1 FROM information_schema.schemata WHERE schema_name = $name LIMIT 1",
+    { name: routeSchemaName(code) },
+  );
+  return rows.length > 0;
+}
+
+/** Drop the report's route schema (imported MDT routes). Returns false if it didn't exist. */
+export async function dropRouteSchema(code: string): Promise<boolean> {
+  const existed = await routeSchemaExists(code);
+  if (existed) await run(`DROP SCHEMA ${quotedRouteSchema(code)} CASCADE`);
+  return existed;
+}
 
 /** Versions (other than the current one) this report is still stored under locally. */
 async function olderVersions(code: string): Promise<number[]> {
@@ -107,10 +142,17 @@ export function expiresAt(downloadedAt: number): number | null {
   return reportTtlDays > 0 ? downloadedAt + reportTtlDays * 86_400_000 : null;
 }
 
+/** Per-report schema kinds the TTL applies to, and the time each was last written. */
+const EXPIRING_SCHEMAS = [
+  { re: REPORT_SCHEMA_RE, writtenAt: "SELECT max(downloaded_at) AS t FROM %s.report_details" },
+  { re: ROUTE_SCHEMA_RE, writtenAt: "SELECT max(imported_at) AS t FROM %s.route_imports" },
+];
+
 /**
- * Drop every report schema (any version) downloaded longer ago than the TTL. Schemas
- * without a report_details row are incomplete or unreadable leftovers and are dropped too.
- * Shared schemas (gamedata, mdt) never match the report naming pattern. Returns dropped names.
+ * Drop every log schema downloaded, and every route schema last imported into, longer ago
+ * than the TTL (any version). Schemas missing that timestamp are incomplete or unreadable
+ * leftovers and are dropped too. Shared schemas (gamedata, mdt) never match the per-report
+ * naming patterns. Returns dropped names.
  */
 export async function expireReports(now = Date.now()): Promise<string[]> {
   const { reportTtlDays } = getConfig();
@@ -121,13 +163,12 @@ export async function expireReports(now = Date.now()): Promise<string[]> {
   const dropped: string[] = [];
   for (const { schema_name } of schemas) {
     const name = String(schema_name);
-    if (!REPORT_SCHEMA_RE.test(name)) continue;
+    const kind = EXPIRING_SCHEMAS.find((k) => k.re.test(name));
+    if (!kind) continue;
     const ident = quotedIdentifier(name);
-    const rows = await queryRows(
-      `SELECT max(downloaded_at) AS downloaded_at FROM ${ident}.report_details`,
-    ).catch(() => []);
-    const downloadedAt = rows[0]?.downloaded_at;
-    if (downloadedAt !== null && downloadedAt !== undefined && Number(downloadedAt) >= cutoff) {
+    const rows = await queryRows(kind.writtenAt.replace("%s", ident)).catch(() => []);
+    const writtenAt = rows[0]?.t;
+    if (writtenAt !== null && writtenAt !== undefined && Number(writtenAt) >= cutoff) {
       continue;
     }
     await run(`DROP SCHEMA ${ident} CASCADE`);

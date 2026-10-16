@@ -1,9 +1,16 @@
 import { quotedIdentifier, type DuckDBConnection } from "@duckdb/node-api";
 import type { TableSpec } from "../db/seeds.js";
-import { quotedSchema, schemaName } from "../db/schema.js";
+import { queryRows } from "../db/duck.js";
+import {
+  quotedRouteSchema,
+  REPORT_SCHEMA_RE,
+  routeSchemaName,
+} from "../db/schema.js";
 
 /**
- * Per-report tables written by import_mdt_route. Created on first import and
+ * Per-report tables written by import_mdt_route, in the report's own route schema
+ * (routeSchemaName), versioned apart from the log schema so re-downloading a report
+ * under a new log schema keeps its routes. Created on first import and
  * keyed by fight_id; re-importing a route for a fight replaces its rows.
  * Column order is authoritative (rows are inserted positionally).
  */
@@ -121,12 +128,13 @@ export const ROUTE_TABLES: Record<string, TableSpec> = {
  * older layout is rebuilt, dropping its other fights' imports (re-import them).
  */
 export async function resetRouteTables(conn: DuckDBConnection, code: string, fightId: number): Promise<void> {
-  const schema = quotedSchema(code);
+  const schema = quotedRouteSchema(code);
+  await conn.run(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   for (const [table, spec] of Object.entries(ROUTE_TABLES)) {
     const existing = await conn.runAndReadAll(
       `SELECT column_name FROM information_schema.columns
        WHERE table_schema = $schema AND table_name = $table ORDER BY ordinal_position`,
-      { schema: schemaName(code), table },
+      { schema: routeSchemaName(code), table },
     );
     const have = existing.getRowObjects().map((r) => String(r.column_name)).join(",");
     if (have && have !== Object.keys(spec.columns).join(",")) {
@@ -150,7 +158,7 @@ export async function insertRows(
   rows: unknown[][],
 ): Promise<void> {
   if (!rows.length) return;
-  const appender = await conn.createAppender(table, schemaName(code));
+  const appender = await conn.createAppender(table, routeSchemaName(code));
   const types = Object.values(ROUTE_TABLES[table]!.columns).map((c) => c.type);
   try {
     for (const row of rows) {
@@ -170,3 +178,50 @@ export async function insertRows(
   }
 }
 
+
+/**
+ * Move route tables written into log schemas (before routes had their own schema) to the
+ * report's route schema, so they survive the log schema being replaced or expired. Log
+ * versions are visited newest first and only copied while the route schema has no routes
+ * yet, so an existing route schema wins, then the newest log version. The tables are then
+ * dropped from every log schema. Returns the log schemas cleared.
+ */
+export async function migrateRouteTables(conn: DuckDBConnection): Promise<string[]> {
+  const rows = await queryRows(
+    "SELECT table_schema, table_name FROM information_schema.tables WHERE table_name LIKE 'route\\_%' ESCAPE '\\'",
+  );
+  const bySchema = new Map<string, { code: string; version: number; tables: string[] }>();
+  for (const r of rows) {
+    const table = String(r.table_name);
+    const m = REPORT_SCHEMA_RE.exec(String(r.table_schema));
+    if (!m || !(table in ROUTE_TABLES)) continue;
+    const entry = bySchema.get(m[0]) ?? { code: m[1]!, version: Number(m[2]), tables: [] };
+    entry.tables.push(table);
+    bySchema.set(m[0], entry);
+  }
+
+  const order = [...bySchema].sort(([, a], [, b]) => b.version - a.version);
+  for (const [schema, { code, tables }] of order) {
+    const from = quotedIdentifier(schema);
+    const to = quotedRouteSchema(code);
+    await conn.run("BEGIN TRANSACTION");
+    try {
+      const existing = await conn.runAndReadAll(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = $schema AND table_name = 'route_imports'",
+        { schema: routeSchemaName(code) },
+      );
+      const copy = existing.getRowObjects().length === 0 && tables.includes("route_imports");
+      if (copy) await conn.run(`CREATE SCHEMA IF NOT EXISTS ${to}`);
+      for (const t of tables) {
+        const table = quotedIdentifier(t);
+        if (copy) await conn.run(`CREATE TABLE ${to}.${table} AS SELECT * FROM ${from}.${table}`);
+        await conn.run(`DROP TABLE ${from}.${table}`);
+      }
+      await conn.run("COMMIT");
+    } catch (err) {
+      await conn.run("ROLLBACK").catch(() => {});
+      throw err;
+    }
+  }
+  return order.map(([schema]) => schema);
+}

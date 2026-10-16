@@ -23,6 +23,8 @@ import { authStatus, authStatusShape, login, loginShape, logout, logoutShape } f
 import { runCli } from "./cli.js";
 import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
 import { expireReports } from "./db/schema.js";
+import { openConnection } from "./db/duck.js";
+import { migrateRouteTables } from "./mdt/route-tables.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -217,12 +219,21 @@ async function main(): Promise<void> {
   await server.connect(transport);
   // stderr is safe for logs; stdout is reserved for the MCP protocol.
   console.error("wcl-mcp server running on stdio");
-  // Drop reports past their TTL; a failure here must not take the server down.
-  expireReports()
-    .then((dropped) => {
-      if (dropped.length > 0) console.error(`wcl-mcp: expired ${dropped.length} local report(s)`);
-    })
-    .catch((err) => console.error("wcl-mcp: report expiry failed:", err));
+  // Move routes out of log schemas (pre-route-schema layout) before the TTL can drop those,
+  // then drop reports past their TTL. A failure here must not take the server down.
+  housekeeping().catch((err) => console.error("wcl-mcp: local report housekeeping failed:", err));
+}
+
+async function housekeeping(): Promise<void> {
+  const conn = await openConnection();
+  try {
+    const migrated = await migrateRouteTables(conn);
+    if (migrated.length > 0) console.error(`wcl-mcp: moved routes out of ${migrated.length} log schema(s)`);
+  } finally {
+    conn.closeSync();
+  }
+  const dropped = await expireReports();
+  if (dropped.length > 0) console.error(`wcl-mcp: expired ${dropped.length} local schema(s)`);
 }
 
 main().catch((err) => {

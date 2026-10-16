@@ -2,8 +2,11 @@ import { z } from "zod";
 import { queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
+  quotedRouteSchema,
   quotedSchema,
   notDownloadedMessage,
+  ROUTE_SCHEMA_VERSION,
+  routeSchemaName,
   schemaExists,
   schemaName,
   SCHEMA_VERSION,
@@ -39,21 +42,24 @@ export async function getReportDetails(args: unknown) {
       return fail(await notDownloadedMessage(report_code));
     }
 
-    const schema = quotedSchema(report_code);
     const tables = [];
 
-    // Route tables exist only once import_mdt_route has run for this report.
-    const existing = new Set(
+    // Route tables live in their own schema, which exists once import_mdt_route has run.
+    const existing = new Map(
       (
         await queryRows(
-          "SELECT table_name FROM information_schema.tables WHERE table_schema = $schema",
-          { schema: schemaName(report_code) },
+          "SELECT table_schema, table_name FROM information_schema.tables " +
+            "WHERE table_schema IN ($log, $route)",
+          { log: schemaName(report_code), route: routeSchemaName(report_code) },
         )
-      ).map((r) => String(r.table_name)),
+      ).map((r) => [String(r.table_name), String(r.table_schema)]),
     );
-    const documented = { ...SEED_TABLES, ...ROUTE_TABLES };
+    const documented = [
+      ...Object.entries(SEED_TABLES).map(([t, spec]) => [t, spec, quotedSchema(report_code)] as const),
+      ...Object.entries(ROUTE_TABLES).map(([t, spec]) => [t, spec, quotedRouteSchema(report_code)] as const),
+    ];
 
-    for (const [table, spec] of Object.entries(documented)) {
+    for (const [table, spec, schema] of documented) {
       if (!existing.has(table)) continue;
       const ref = `${schema}.${qIdent(table)}`;
 
@@ -91,6 +97,9 @@ export async function getReportDetails(args: unknown) {
       report_code,
       schema: schemaName(report_code),
       schema_version: SCHEMA_VERSION,
+      ...(existing.has("route_imports")
+        ? { route_schema: routeSchemaName(report_code), route_schema_version: ROUTE_SCHEMA_VERSION }
+        : {}),
       query_hint:
         "Use execute_readonly_query(report_code, sql) with these tables referenced unqualified " +
         "(search_path is set to this report's schema). Join fight_events.source_id/target_id to " +

@@ -257,5 +257,9 @@ ORDER BY 1;
 - Schema version is `v3`; the `_v<N>` suffix on each report schema allows future layout changes.
   Reports downloaded under an older version must be downloaded again (tools say so), and the old
   copies are cleaned up by the TTL.
+- Imported MDT routes live in their own schema, `route_<reportCode>_v1`, versioned separately
+  from the log schema, so re-downloading a report (including after a log schema change) keeps its
+  routes. Queries see both schemas' tables unqualified. Routes expire `WCL_REPORT_TTL_DAYS` after
+  their last import; `delete_local_report` removes them along with the log.
 
 See `PLAN.md` for the full design.
