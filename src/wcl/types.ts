@@ -85,3 +85,9 @@ export interface UserReportsResponse {
     } | null;
   };
 }
+
+export interface CurrentUserResponse {
+  userData: {
+    currentUser: { id: number; name: string } | null;
+  };
+}

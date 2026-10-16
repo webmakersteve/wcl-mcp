@@ -20,12 +20,16 @@ without hammering the WCL API.
    guide describing every column and how to query it).
 4. **analyze** with `execute_readonly_query` — arbitrary read-only DuckDB SQL.
 
-It runs locally because it uses your Warcraft Logs API credentials.
+It runs locally because it uses your Warcraft Logs API credentials. Ask the agent to log you in
+with your Warcraft Logs account to also reach your private reports.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
+| `login` | Sign in with your Warcraft Logs account so tools can see your private reports. |
+| `logout` | Forget the stored login; back to public reports only. |
+| `auth_status` | Whether you're logged in (and as whom), or a login is waiting on you. |
 | `find_reports` | Search your uploaded reports by zone + date range → report codes. |
 | `download_report` | Fetch a report into a local DuckDB schema (idempotent; `force` to rebuild). |
 | `get_report_details` | Describe a downloaded report: tables, schemas, stats, semantic guide. |
@@ -82,19 +86,58 @@ npm install
 npm run build
 ```
 
-Create a **v2 API client** at https://www.warcraftlogs.com/api/clients/ and copy `.env.example` to
-`.env`:
+The server ships with the wcl-mcp Warcraft Logs API client id built in. To use your own client
+instead, create a **v2 API client** at https://www.warcraftlogs.com/api/clients/ and copy
+`.env.example` to `.env`:
 
 ```
-WCL_CLIENT_ID=...
+WCL_CLIENT_ID=...        # optional; overrides the built-in client id
 WCL_CLIENT_SECRET=...
-WCL_USER_ID=...          # numeric id from your profile URL; required only for find_reports
-WCL_DB_PATH=./data/wcl.duckdb   # optional; this is the default
+WCL_REDIRECT_URI=http://localhost:8888/redirect   # for login; must match the API client
+WCL_USER_ID=...          # numeric id from your profile URL; only for find_reports without login
+WCL_DB_PATH=./data/wcl.duckdb   # optional override; see below
 ```
 
-> Note: Warcraft Logs has no long-lived personal access token. Auth uses OAuth client-credentials —
-> the server exchanges your client id/secret for a short-lived bearer token automatically. Because
-> client-credentials has no "current user", `find_reports` needs your numeric `WCL_USER_ID`.
+The DuckDB file defaults to a per-user data directory, so downloaded reports and game data persist
+across projects and sessions whatever directory the server is launched from:
+
+| OS | Default `WCL_DB_PATH` |
+| --- | --- |
+| macOS | `~/Library/Application Support/wcl-mcp/wcl.duckdb` |
+| Windows | `%LOCALAPPDATA%\wcl-mcp\wcl.duckdb` |
+| Linux | `$XDG_DATA_HOME/wcl-mcp/wcl.duckdb` (default `~/.local/share/...`) |
+
+`WCL_DB_PATH` overrides it (relative paths resolve against the working directory; `~` expands).
+
+### Private reports: log in
+
+Without a login the server uses OAuth client-credentials against `/api/v2/client`, which only sees
+**public** reports. To include your private ones, add the redirect URI above to your API client on
+https://www.warcraftlogs.com/api/clients/, then ask the agent to log you in (the `login` tool).
+
+`login` runs the authorization-code + PKCE flow (scopes `view-user-profile`,
+`view-private-reports`):
+
+- If the MCP client supports **URL-mode elicitation**, the server asks the client to show you the
+  Warcraft Logs approval page, and sends `notifications/elicitation/complete` when you're done.
+- Otherwise the server opens the page in your default browser itself; the URL is also in the
+  tool result.
+
+Either way a temporary listener on the redirect URI catches the approval. The tool waits up to
+90 s (with progress notifications); if you're slower it returns `pending` and the login still
+completes in the background (the listener gives up after 10 minutes) — `auth_status` confirms.
+
+Tokens are saved to `~/.config/wcl-mcp/auth.json` (Windows: `%APPDATA%\wcl-mcp\auth.json`;
+mode 0600; override with `WCL_AUTH_PATH`). Requests then go to
+`/api/v2/user`, tokens are refreshed as they expire (a dead refresh token logs you out), and
+`find_reports` defaults to your uploads. On every login/logout the server swaps the `login` and
+`logout` tools and sends `notifications/tools/list_changed`, so clients refresh their tool list.
+
+For setup or debugging outside an agent, the same flow is available as a CLI:
+`node dist/index.js login | logout | whoami` (or `npm run login`).
+
+Private report data is cached in the local DuckDB file like any other report. Wipefest
+(`get_pull_insights`) can only see public reports.
 
 ## Run / debug
 
@@ -113,9 +156,7 @@ npx @modelcontextprotocol/inspector node dist/index.js
       "command": "node",
       "args": ["/absolute/path/to/wcl-mcp/dist/index.js"],
       "env": {
-        "WCL_CLIENT_ID": "...",
-        "WCL_CLIENT_SECRET": "...",
-        "WCL_USER_ID": "..."
+        "WCL_CLIENT_SECRET": "..."
       }
     }
   }

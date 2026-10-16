@@ -1,7 +1,13 @@
 import { getConfig } from "../config.js";
-
-const TOKEN_URL = "https://www.warcraftlogs.com/oauth/token";
-const GRAPHQL_URL = "https://www.warcraftlogs.com/api/v2/client";
+import {
+  CLIENT_API_URL,
+  TOKEN_URL,
+  USER_API_URL,
+  isExpired,
+  loadStoredAuth,
+  refreshStoredAuth,
+  type StoredAuth,
+} from "./auth.js";
 
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
@@ -47,21 +53,64 @@ interface CachedToken {
   expiresAt: number;
 }
 
+/** A bearer token plus the endpoint it's valid for. */
+interface ApiAuth {
+  token: string;
+  url: string;
+}
+
 /**
  * Thin Warcraft Logs v2 GraphQL client.
- * - OAuth client-credentials with an in-memory, proactively-refreshed token.
+ * - Logged in (`wcl-mcp login`): the user's token against /api/v2/user, so private reports
+ *   are visible; refreshed with the stored refresh token.
+ * - Otherwise: OAuth client-credentials against /api/v2/client (public reports only), with an
+ *   in-memory, proactively-refreshed token.
  * - Retries on 401 (token refresh), 429 (honoring Retry-After), and 5xx (backoff).
  */
 export class WclClient {
   private token: CachedToken | undefined;
+  private userAuth: StoredAuth | undefined;
 
-  private async getToken(forceRefresh = false): Promise<string> {
+  /** Whether requests run as a logged-in user (and can see their private reports). */
+  get loggedInUser(): { userId: number | undefined; userName: string | undefined } | undefined {
+    const auth = this.userAuth ?? loadStoredAuth();
+    return auth && { userId: auth.userId, userName: auth.userName };
+  }
+
+  private async getAuth(forceRefresh = false): Promise<ApiAuth> {
+    // Re-read each time so a `wcl-mcp login`/`logout` takes effect without a restart.
+    const stored = loadStoredAuth();
+    if (stored) {
+      if (this.userAuth?.accessToken !== stored.accessToken) this.userAuth = stored;
+      let auth = this.userAuth!;
+      if (forceRefresh || isExpired(auth)) {
+        try {
+          auth = await refreshStoredAuth(auth);
+        } catch (err) {
+          throw new WclError(err instanceof Error ? err.message : String(err), "auth_failure");
+        }
+        this.userAuth = auth;
+      }
+      return { token: auth.accessToken, url: USER_API_URL };
+    }
+    this.userAuth = undefined;
+    return { token: await this.getClientToken(forceRefresh), url: CLIENT_API_URL };
+  }
+
+  private async getClientToken(forceRefresh = false): Promise<string> {
     const now = Date.now();
     if (!forceRefresh && this.token && now < this.token.expiresAt) {
       return this.token.accessToken;
     }
 
     const { clientId, clientSecret } = getConfig();
+    if (!clientSecret) {
+      throw new WclError(
+        "Not logged in and WCL_CLIENT_SECRET is unset. Call the login tool, or set " +
+          "WCL_CLIENT_SECRET for public-report access.",
+        "auth_failure",
+      );
+    }
     const body = new URLSearchParams({ grant_type: "client_credentials" });
     const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
@@ -106,8 +155,7 @@ export class WclClient {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const token = await this.getToken();
-        return await this.execute<T>(query, variables, token);
+        return await this.execute<T>(query, variables, await this.getAuth());
       } catch (err) {
         if (!(err instanceof WclError)) throw err;
         lastError = err;
@@ -115,7 +163,7 @@ export class WclClient {
         switch (err.code) {
           case "auth_expired":
             // Token rejected server-side; force a refresh and retry once.
-            await this.getToken(true);
+            await this.getAuth(true);
             continue;
           case "rate_limited": {
             const wait = err.retryAfterMs ?? DEFAULT_RATE_LIMIT_WAIT_MS;
@@ -144,11 +192,11 @@ export class WclClient {
   private async execute<T>(
     query: string,
     variables: Record<string, unknown>,
-    token: string,
+    { token, url }: ApiAuth,
   ): Promise<T> {
     let res: Response;
     try {
-      res = await fetch(GRAPHQL_URL, {
+      res = await fetch(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

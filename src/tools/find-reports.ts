@@ -44,17 +44,18 @@ export async function findReports(args: unknown) {
   return guard(async () => {
     const { zone_id, start_date, end_date, limit, page } = inputSchema.parse(args);
 
-    const { userId } = getConfig();
+    const client = getWclClient();
+    const loggedIn = client.loggedInUser;
+    const userId = getConfig().userId ?? loggedIn?.userId;
     if (!userId) {
       return fail(
-        "find_reports is scoped to your own uploads, which requires your numeric WCL user id. " +
-          "Set WCL_USER_ID in the environment (find it in your profile URL: " +
-          "https://www.warcraftlogs.com/user/<id>). Alternatively, ask the agent to use a known " +
-          "report code directly with download_report.",
+        "find_reports is scoped to your own uploads, which requires knowing who you are. " +
+          "Call the login tool (also unlocks private reports), or set WCL_USER_ID (find it in " +
+          "your profile URL: https://www.warcraftlogs.com/user/<id>). Alternatively, ask the " +
+          "agent to use a known report code directly with download_report.",
       );
     }
 
-    const client = getWclClient();
     const data = await client.query<UserReportsResponse>(USER_REPORTS_QUERY, {
       userID: userId,
       zoneID: zone_id ?? null,
@@ -85,8 +86,10 @@ export async function findReports(args: unknown) {
       current_page: reports.current_page,
       has_more_pages: reports.has_more_pages,
       note:
-        "Scoped to your uploads (WCL_USER_ID). Player-name filtering is not supported by the API; " +
-        "download a report and use execute_readonly_query to filter by participating players.",
+        `Scoped to user ${userId}'s uploads` +
+        (loggedIn ? ", private reports included. " : " (public only; call login to include private). ") +
+        "Player-name filtering is not supported by the API; download a report and use " +
+        "execute_readonly_query to filter by participating players.",
     });
   });
 }

@@ -83,9 +83,11 @@ export async function downloadReport(args: unknown) {
     });
     const report = meta.reportData.report;
     if (!report) {
-      return fail(
-        `Report '${report_code}' not found (it may be private, deleted, or the code is wrong).`,
-      );
+      const hint = client.loggedInUser
+        ? "it may be private to someone else, deleted, or the code is wrong"
+        : "it may be private (call the login tool to access your private reports), deleted, " +
+          "or the code is wrong";
+      return fail(`Report '${report_code}' not found (${hint}).`);
     }
 
     // 2-5 run in one transaction on a dedicated connection: a failure part-way

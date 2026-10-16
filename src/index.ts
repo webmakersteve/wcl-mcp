@@ -19,11 +19,72 @@ import { lookupSpells, lookupSpellsShape } from "./tools/lookup-spells.js";
 import { syncGameDataTool, syncGameDataShape } from "./tools/sync-game-data.js";
 import { getPullInsights, getPullInsightsShape } from "./tools/get-pull-insights.js";
 import { importMdtRoute, importMdtRouteShape } from "./tools/import-mdt-route.js";
+import { authStatus, authStatusShape, login, loginShape, logout, logoutShape } from "./tools/auth.js";
+import { runCli } from "./cli.js";
+import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
   version: "0.1.0",
 });
+
+const loginTool = server.registerTool(
+  "login",
+  {
+    title: "Log in to Warcraft Logs",
+    description:
+      "Sign the user in with their Warcraft Logs account so the other tools can see their " +
+      "private reports (and find_reports defaults to their uploads). Opens the WCL approval page " +
+      "via the client or the user's browser and waits for them to approve. Call it when the user " +
+      "asks to log in, or when a report they expect to see comes back not found.",
+    inputSchema: loginShape,
+  },
+  (_args, extra) => login(server, extra),
+);
+
+const logoutTool = server.registerTool(
+  "logout",
+  {
+    title: "Log out of Warcraft Logs",
+    description:
+      "Forget the user's Warcraft Logs login (deletes the stored tokens). Tools fall back to " +
+      "public reports only. Already-downloaded reports stay in the local database.",
+    inputSchema: logoutShape,
+  },
+  () => logout(),
+);
+
+server.registerTool(
+  "auth_status",
+  {
+    title: "Warcraft Logs auth status",
+    description:
+      "Whether the user is logged in to Warcraft Logs (and as whom), i.e. whether private " +
+      "reports are reachable, and whether a login is waiting on the user.",
+    inputSchema: authStatusShape,
+  },
+  () => {
+    syncAuthTools(); // picks up a login/logout made outside this process (CLI)
+    return authStatus();
+  },
+);
+
+/** Offer login or logout to match the current state; the SDK notifies clients on each change. */
+let loggedIn: boolean | undefined;
+function syncAuthTools(): void {
+  const now = loadStoredAuth() !== undefined;
+  if (now === loggedIn) return;
+  loggedIn = now;
+  if (now) {
+    loginTool.disable();
+    logoutTool.enable();
+  } else {
+    logoutTool.disable();
+    loginTool.enable();
+  }
+}
+syncAuthTools();
+onAuthChange(syncAuthTools);
 
 server.registerTool(
   "find_reports",
@@ -31,7 +92,8 @@ server.registerTool(
     title: "Find reports",
     description:
       "Search your uploaded Warcraft Logs reports by zone (instance) and date range. " +
-      "Returns matching report codes you can pass to download_report. Requires WCL_USER_ID.",
+      "Returns matching report codes you can pass to download_report. Includes private reports " +
+      "when logged in (see login); otherwise needs WCL_USER_ID and sees public ones only.",
     inputSchema: findReportsShape,
   },
   (args) => findReports(args),
@@ -146,6 +208,8 @@ server.registerTool(
 );
 
 async function main(): Promise<void> {
+  // `wcl-mcp login | logout | whoami`; with no subcommand, serve MCP over stdio.
+  if (await runCli(process.argv.slice(2))) return;
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // stderr is safe for logs; stdout is reserved for the MCP protocol.

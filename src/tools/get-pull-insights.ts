@@ -21,7 +21,8 @@ export async function getPullInsights(args: unknown) {
     if (!insights.length) {
       return fail(
         `Wipefest returned no insights for ${report_code} fight ${fight_id}. ` +
-          "It only analyzes raid boss encounters it has mechanic configs for.",
+          "It only analyzes raid boss encounters it has mechanic configs for, and only public " +
+          "reports (it can't see private logs).",
       );
     }
 

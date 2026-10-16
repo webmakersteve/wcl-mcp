@@ -122,3 +122,15 @@ export const USER_REPORTS_QUERY = /* GraphQL */ `
     }
   }
 `;
+
+/** The logged-in user (only valid against /api/v2/user with a user token). */
+export const CURRENT_USER_QUERY = /* GraphQL */ `
+  query CurrentUser {
+    userData {
+      currentUser {
+        id
+        name
+      }
+    }
+  }
+`;

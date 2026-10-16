@@ -50,7 +50,7 @@ wcl-mcp/
   PLAN.md                 # copy of this plan (created as step 0 — user asked to persist it)
   src/
     index.ts              # bootstrap McpServer, register 5 tools, connect stdio
-    config.ts             # load+validate env (zod); WCL_DB_PATH default ./data/wcl.duckdb
+    config.ts             # load+validate env (zod); WCL_DB_PATH default: per-user data dir
     wcl/
       client.ts           # token cache + GraphQL POST + retry/backoff + 429 (Retry-After)
       queries.ts          # GraphQL query strings
@@ -70,7 +70,7 @@ wcl-mcp/
 
 ## DuckDB data model
 
-- **One persistent file**, default `./data/wcl.duckdb` (override `WCL_DB_PATH`).
+- **One persistent file**, default in the per-user data dir, e.g. `~/Library/Application Support/wcl-mcp/wcl.duckdb` (override `WCL_DB_PATH`).
 - **One DuckDB schema per report**, named `r_<reportCode>_v1` (report codes are `[A-Za-z0-9]`, safe;
   always quote the identifier since codes are case-sensitive). The `_v1` suffix is the
   **schema-evolution version** (`SCHEMA_VERSION = 1`).
@@ -169,5 +169,5 @@ INSTALL/LOAD/SET/CALL/EXPORT). The per-report `search_path` scoping also limits 
 4. Verify idempotency: second `download_report` of same code returns "already downloaded" without refetch.
 
 ## Out of scope for v1 (noted for later)
-- Player-name search in `find_reports`; user-OAuth (`/api/v2/user`) flow; additional seed tables
+- Player-name search in `find_reports`; additional seed tables
   (e.g. pre-aggregated damage/healing summary tables); schema migrations between versions; circuit breaker.

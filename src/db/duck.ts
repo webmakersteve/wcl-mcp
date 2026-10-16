@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { getConfig } from "../config.js";
 
@@ -16,9 +16,8 @@ function getInstance(): Promise<DuckDBInstance> {
   if (!instancePromise) {
     instancePromise = (async () => {
       const { dbPath } = getConfig();
-      const absPath = resolve(process.cwd(), dbPath);
-      mkdirSync(dirname(absPath), { recursive: true });
-      return DuckDBInstance.create(absPath, { enable_external_access: "false" });
+      mkdirSync(dirname(dbPath), { recursive: true });
+      return DuckDBInstance.create(dbPath, { enable_external_access: "false" });
     })();
   }
   return instancePromise;
