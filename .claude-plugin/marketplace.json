@@ -8,7 +8,11 @@
   "plugins": [
     {
       "name": "wcl-mcp",
-      "source": "./",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/webmakersteve/wcl-mcp/releases/download/v0.1.0/wcl-mcp-0.1.0.zip",
+        "sha256": "6f0eb54e139b2f6b6202b92aeca142b270dee56f178221e5143c301fc43653c4"
+      },
       "description": "Analyze Warcraft Logs reports (including private ones) with a local DuckDB.",
       "category": "gaming"
     }
