@@ -83,6 +83,33 @@ export const FIGHT_EVENTS_QUERY = /* GraphQL */ `
 `;
 
 /**
+ * Health over time for every friendly or enemy actor in one fight: the Resources graph with
+ * abilityID 1000 (Health). One series per actor; each point is a sampled health reading.
+ */
+export const FIGHT_HEALTH_QUERY = /* GraphQL */ `
+  query FightHealth(
+    $code: String!
+    $fightID: Int!
+    $startTime: Float!
+    $endTime: Float!
+    $hostilityType: HostilityType!
+  ) {
+    reportData {
+      report(code: $code) {
+        graph(
+          fightIDs: [$fightID]
+          startTime: $startTime
+          endTime: $endTime
+          dataType: Resources
+          abilityID: 1000
+          hostilityType: $hostilityType
+        )
+      }
+    }
+  }
+`;
+
+/**
  * List reports uploaded by a given user, optionally filtered by zone and time range.
  * Used by find_reports.
  */

@@ -21,8 +21,9 @@ export const executeReadonlyQueryShape = {
     .string()
     .describe(
       "A single read-only DuckDB SQL statement (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/...). " +
-        "Reference the seed tables unqualified (fight_events, fights, actors, report_details) — " +
-        "search_path is scoped to this report. Spell data (once synced) is in the shared gamedata " +
+        "Reference the seed tables unqualified (fight_events, fight_health, fights, actors, report_details) — " +
+        "search_path is scoped to this report. Read fight_health's limitations in get_report_details " +
+        "before aggregating it. Spell data (once synced) is in the shared gamedata " +
         "schema, e.g. JOIN gamedata.spell s ON s.spell_id = fight_events.ability_game_id. After " +
         "import_mdt_route, route_* tables are here too, and MDT dungeon data is in mdt.<table>.",
     ),

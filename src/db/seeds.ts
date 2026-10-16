@@ -89,6 +89,31 @@ export const SEED_TABLES: Record<string, TableSpec> = {
       raw: { type: "VARCHAR", description: "Full event object as a JSON string.", usage: "Query with json_extract(raw, '$.field') / json_extract_string(...) for fields not promoted to columns (e.g. overkill, resourceChange, abilityName)." },
     },
   },
+
+  fight_health: {
+    description:
+      "Health over time for every friendly and enemy actor in each fight, from WCL's Resources graph " +
+      "(Health). One row per health reading. Use it for health/DPS trend analysis — e.g. total " +
+      "enemy health remaining per time bucket — which is hard to rebuild from fight_events alone. " +
+      "LIMITATIONS: (1) Readings are not bucketed: they fall at each actor's own event times, " +
+      "so bucket in SQL and take each actor's last reading per bucket (arg_max(hit_points, timestamp)). " +
+      "(2) WCL does not identify individual mobs: all instances of one NPC type share one actor_id " +
+      "and their readings are interleaved in a single series (no instance column), so per-mob health " +
+      "can't be tracked and summing a multi-mob actor's readings gives wrong totals — bosses and " +
+      "single-instance actors are exact, packs of the same mob type are approximate. Use " +
+      "fight_events (target_instance) for per-mob damage. (3) An actor only appears in a bucket if it " +
+      "has a reading there, so a per-bucket enemy total is the HP of enemies active in that bucket, " +
+      "not of everything left in the fight/dungeon; jumps up mean new enemies entered combat, not healing.",
+    columns: {
+      fight_id: { type: "INTEGER", description: "Fight this reading belongs to.", usage: "Join to fights.fight_id." },
+      hostility: { type: "VARCHAR", description: "'friendly' (players and their pets) or 'enemy' (NPCs and bosses)." },
+      actor_id: { type: "INTEGER", description: "Actor whose health this is.", usage: "Join to actors.actor_id. NOT unique per mob: every instance of an NPC type shares one actor_id and their readings are interleaved, so for multi-mob actors consecutive rows can be different mobs and totals are approximate." },
+      timestamp: { type: "BIGINT", description: "Reading time, milliseconds relative to report start_time (same clock as fight_events.timestamp).", usage: "Bucket with (timestamp - fights.start_time) // 5000 for 5 s buckets." },
+      hit_points: { type: "BIGINT", description: "Absolute current hit points at this reading." },
+      max_hit_points: { type: "BIGINT", description: "Absolute max hit points at this reading." },
+      health_percent: { type: "DOUBLE", description: "Health as a percentage of max (0-100, as WCL reports it).", usage: "Boss health % over time: WHERE hostility = 'enemy' AND actor_id = <boss>. Enemy health lost per bucket ≈ raid DPS on that target." },
+    },
+  },
 };
 
 export type SeedTableName = keyof typeof SEED_TABLES;

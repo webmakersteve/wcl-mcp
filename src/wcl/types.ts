@@ -66,6 +66,30 @@ export interface FightEventsResponse {
   };
 }
 
+/** One actor's health series from the Resources graph (abilityID 1000 = Health). */
+export interface WclHealthSeries {
+  name: string;
+  /** Actor id; a series covers every instance of that actor. */
+  id: number;
+  guid: number | null;
+  type: string | null;
+  /** [timestamp (report-relative ms), health percent] pairs. */
+  data: Array<[number, number]>;
+  /** Absolute hit points, parallel to data. */
+  currentValues?: number[];
+  /** Absolute max hit points, parallel to data. */
+  maxValues?: number[];
+}
+
+export interface FightHealthResponse {
+  reportData: {
+    report: {
+      /** The `graph` field is untyped JSON; null-ish when the fight has no health data. */
+      graph: { data?: { series?: WclHealthSeries[] } } | null;
+    } | null;
+  };
+}
+
 export interface UserReportSummary {
   code: string;
   title: string | null;

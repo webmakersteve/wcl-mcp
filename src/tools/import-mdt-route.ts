@@ -43,7 +43,7 @@ export async function importMdtRoute(args: unknown) {
       const old = SCHEMA_VERSION > 1 && (await schemaExists(report_code, SCHEMA_VERSION - 1));
       return fail(
         old
-          ? `Report '${report_code}' was downloaded with an older schema that lacks NPC ids. ` +
+          ? `Report '${report_code}' was downloaded with an older schema. ` +
               `Call download_report('${report_code}') again to upgrade it.`
           : `Report '${report_code}' is not downloaded. Call download_report('${report_code}') first.`,
       );

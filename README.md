@@ -11,11 +11,13 @@ without hammering the WCL API.
 
 1. **find** a report (or you hand the agent a report code).
 2. **download** it — the server pages the WCL v2 GraphQL API and materializes the run into a DuckDB
-   schema named `r_<reportCode>_v2` with four seed tables:
+   schema named `r_<reportCode>_v3` with five seed tables:
    - `report_details` — one row of high-level metadata
    - `fights` — one row per pull/encounter
    - `actors` — players/pets/NPCs (resolves event source/target ids to names)
    - `fight_events` — the raw event stream (`dataType: All`), with a `raw` JSON column
+   - `fight_health` — health over time (absolute HP, max HP, %) for every friendly and enemy
+     actor per fight, from WCL's Resources → Health graph; good for health/DPS trend analysis
 3. **inspect** the schema via `get_report_details` (tables, row counts, column stats, and a semantic
    guide describing every column and how to query it).
 4. **analyze** with `execute_readonly_query` — arbitrary read-only DuckDB SQL.
@@ -210,18 +212,44 @@ ORDER BY damage DESC
 LIMIT 10;
 ```
 
+Total enemy health remaining per 5 s bucket (a DPS trend — the drop between buckets is damage
+done), taking each actor's last reading per bucket:
+
+```sql
+WITH last_reading AS (
+  SELECT (h.timestamp - f.start_time) // 5000 AS bucket, h.actor_id,
+         arg_max(h.hit_points, h.timestamp) AS hp
+  FROM fight_health h JOIN fights f USING (fight_id)
+  WHERE h.fight_id = 1 AND h.hostility = 'enemy'
+  GROUP BY 1, 2
+)
+SELECT bucket * 5 AS second, SUM(hp) AS enemy_hp
+FROM last_reading
+GROUP BY 1
+ORDER BY 1;
+```
+
 (Table names are unqualified — `execute_readonly_query` scopes `search_path` to the report.)
 
 ## Notes & limits
 
 - `fight_events.raw` holds the complete event JSON; query fields not promoted to columns with
   `json_extract(raw, '$.field')` / `json_extract_string(...)`.
+- `fight_health` limitations (inherent to WCL's health graph):
+  - Readings aren't bucketed; they land at each actor's own event times. Bucket in SQL and take
+    each actor's last reading per bucket.
+  - Individual mobs aren't identified: every instance of an NPC type shares one `actor_id`, and
+    their readings are interleaved in one series. Bosses and single mobs are exact; packs of the
+    same mob type are approximate, and per-mob health can't be tracked (use
+    `fight_events.target_instance` for per-mob damage).
+  - A per-bucket total only includes actors with a reading in that bucket, i.e. enemies in combat
+    then, not everything left in the fight. A jump up means new enemies were pulled, not healing.
 - DuckDB runs with `enable_external_access=false`, so queries can't read local files or the network
   (`read_csv`, `read_text`, `glob`, `ATTACH`, ...). Only the downloaded reports are reachable.
 - Player-name search isn't supported by the WCL API; download a report and filter via SQL instead.
 - `get_pull_insights` calls `api.wipefest.gg`, the undocumented backend of wipefest.gg (no auth
   needed for public reports). It only covers raid bosses Wipefest has mechanic configs for, and
   may break if Wipefest changes its API. The report need not be downloaded locally.
-- Schema version is `v1`; the `_v<N>` suffix on each report schema allows future layout changes.
+- Schema version is `v3`; the `_v<N>` suffix on each report schema allows future layout changes.
 
 See `PLAN.md` for the full design.

@@ -5,7 +5,7 @@ import { queryRows, run } from "./duck.js";
  * Schema-evolution version. Bump when the seed table layout changes; old reports
  * keep their `_v<N>` schema and can be re-downloaded under the new version.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** WCL report codes are alphanumeric (a–z, A–Z, 0–9), typically 16 chars. */
 const REPORT_CODE_RE = /^[A-Za-z0-9]{1,32}$/;

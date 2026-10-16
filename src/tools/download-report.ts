@@ -10,11 +10,13 @@ import {
 } from "../db/schema.js";
 import { createSeedTables } from "../db/seeds.js";
 import { getWclClient } from "../wcl/client.js";
-import { FIGHT_EVENTS_QUERY, REPORT_META_QUERY } from "../wcl/queries.js";
+import { FIGHT_EVENTS_QUERY, FIGHT_HEALTH_QUERY, REPORT_META_QUERY } from "../wcl/queries.js";
 import type {
   FightEventsResponse,
+  FightHealthResponse,
   ReportMetaResponse,
   WclEvent,
+  WclHealthSeries,
 } from "../wcl/types.js";
 import { guard, ok, fail } from "./result.js";
 
@@ -59,6 +61,34 @@ function appendEvent(appender: DuckDBAppender, fightId: number, ev: WclEvent): v
   appender.endRow();
 }
 
+/** WCL HostilityType → fight_health.hostility. */
+const HEALTH_HOSTILITIES = [
+  ["Friendlies", "friendly"],
+  ["Enemies", "enemy"],
+] as const;
+
+/** Append every reading of one health series in SEED_TABLES.fight_health column order. */
+function appendHealthSeries(
+  appender: DuckDBAppender,
+  fightId: number,
+  hostility: string,
+  series: WclHealthSeries,
+): void {
+  const points = series.data ?? [];
+  for (let i = 0; i < points.length; i++) {
+    const [timestamp, percent] = points[i];
+    appender.appendInteger(fightId);
+    appender.appendVarchar(hostility);
+    appender.appendInteger(series.id);
+    appender.appendBigInt(BigInt(Math.trunc(timestamp)));
+    appendNullableBigInt(appender, series.currentValues?.[i]);
+    appendNullableBigInt(appender, series.maxValues?.[i]);
+    if (percent === undefined || percent === null) appender.appendNull();
+    else appender.appendDouble(percent);
+    appender.endRow();
+  }
+}
+
 export async function downloadReport(args: unknown) {
   return guard(async () => {
     const { report_code, force } = inputSchema.parse(args);
@@ -90,7 +120,7 @@ export async function downloadReport(args: unknown) {
       return fail(`Report '${report_code}' not found (${hint}).`);
     }
 
-    // 2-5 run in one transaction on a dedicated connection: a failure part-way
+    // 2-6 run in one transaction on a dedicated connection: a failure part-way
     // (rate limit, network) rolls back and leaves any previous copy intact,
     // rather than a half-filled schema that would look "already downloaded".
     const schema = schemaName(report_code);
@@ -172,7 +202,29 @@ export async function downloadReport(args: unknown) {
         appender.closeSync();
       }
 
-      // 5. Insert the single report_details row now that totals are known.
+      // 5. Health over time per fight, friendly and enemy (one graph request each).
+      const healthAppender = await conn.createAppender("fight_health", schema);
+      try {
+        for (const f of fights) {
+          for (const [hostilityType, hostility] of HEALTH_HOSTILITIES) {
+            const res = await client.query<FightHealthResponse>(FIGHT_HEALTH_QUERY, {
+              code: report_code,
+              fightID: f.id,
+              startTime: f.startTime,
+              endTime: f.endTime,
+              hostilityType,
+            });
+            for (const series of res.reportData.report?.graph?.data?.series ?? []) {
+              appendHealthSeries(healthAppender, f.id, hostility, series);
+            }
+          }
+          healthAppender.flushSync();
+        }
+      } finally {
+        healthAppender.closeSync();
+      }
+
+      // 6. Insert the single report_details row now that totals are known.
       await conn.run(
         `INSERT INTO ${q(schema)}.report_details VALUES ` +
           `($report_code, $title, $owner, $zone_id, $zone_name, $region, $start_time, $end_time, $num_fights, $total_events, $schema_version, $downloaded_at)`,
@@ -228,7 +280,8 @@ async function tableCounts(code: string): Promise<Record<string, number>> {
     `SELECT 'report_details' AS t, count(*) AS n FROM ${q(schema)}.report_details
      UNION ALL SELECT 'fights', count(*) FROM ${q(schema)}.fights
      UNION ALL SELECT 'actors', count(*) FROM ${q(schema)}.actors
-     UNION ALL SELECT 'fight_events', count(*) FROM ${q(schema)}.fight_events`,
+     UNION ALL SELECT 'fight_events', count(*) FROM ${q(schema)}.fight_events
+     UNION ALL SELECT 'fight_health', count(*) FROM ${q(schema)}.fight_health`,
   );
   const out: Record<string, number> = {};
   for (const r of rows) out[String(r.t)] = Number(r.n);
