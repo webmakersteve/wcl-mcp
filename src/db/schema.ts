@@ -41,11 +41,19 @@ export async function schemaExists(
   return rows.length > 0;
 }
 
-export async function createSchema(
+/**
+ * True when the report's download finished: the schema exists and its
+ * report_details row (written last, in the same transaction) is present.
+ */
+export async function isDownloadComplete(
   code: string,
   version = SCHEMA_VERSION,
-): Promise<void> {
-  await run(`CREATE SCHEMA IF NOT EXISTS ${quotedSchema(code, version)}`);
+): Promise<boolean> {
+  if (!(await schemaExists(code, version))) return false;
+  const rows = await queryRows(
+    `SELECT 1 FROM ${quotedSchema(code, version)}.report_details LIMIT 1`,
+  ).catch(() => []);
+  return rows.length > 0;
 }
 
 /** Drop the schema and all its tables. Returns false if it didn't exist. */

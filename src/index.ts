@@ -15,6 +15,8 @@ import {
   executeReadonlyQuery,
   executeReadonlyQueryShape,
 } from "./tools/execute-readonly-query.js";
+import { lookupSpells, lookupSpellsShape } from "./tools/lookup-spells.js";
+import { syncGameDataTool, syncGameDataShape } from "./tools/sync-game-data.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -63,7 +65,8 @@ server.registerTool(
     title: "Execute read-only query",
     description:
       "Run a single read-only DuckDB SQL statement against a downloaded report's tables. " +
-      "Table names resolve to that report automatically (search_path is scoped).",
+      "Table names resolve to that report automatically (search_path is scoped). " +
+      "Spell names/data can be joined from the shared gamedata schema (see get_report_details).",
     inputSchema: executeReadonlyQueryShape,
   },
   (args) => executeReadonlyQuery(args),
@@ -78,6 +81,32 @@ server.registerTool(
     inputSchema: deleteLocalReportShape,
   },
   (args) => deleteLocalReport(args),
+);
+
+server.registerTool(
+  "lookup_spells",
+  {
+    title: "Look up spells",
+    description:
+      "Get WoW spell names, rendered descriptions, and mechanics (cooldown, charges, cast time, " +
+      "duration, costs, proc chance) by spell id or name. Ids match WCL ability gameIDs. Use it to " +
+      "understand what abilities in a log do before giving gameplay advice. Works offline from " +
+      "locally cached client data; the first call downloads it (~1 min).",
+    inputSchema: lookupSpellsShape,
+  },
+  (args) => lookupSpells(args),
+);
+
+server.registerTool(
+  "sync_game_data",
+  {
+    title: "Sync game data",
+    description:
+      "Download WoW client spell data (from wago.tools DB2 exports) for the latest live build into " +
+      "the local gamedata schema. No-op if already current. Run after a game patch.",
+    inputSchema: syncGameDataShape,
+  },
+  (args) => syncGameDataTool(args),
 );
 
 async function main(): Promise<void> {

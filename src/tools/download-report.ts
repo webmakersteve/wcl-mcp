@@ -1,11 +1,10 @@
 import { z } from "zod";
 import type { DuckDBAppender } from "@duckdb/node-api";
-import { getConnection, queryRows, run } from "../db/duck.js";
+import { openConnection, queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
-  createSchema,
-  dropSchema,
-  schemaExists,
+  isDownloadComplete,
+  quotedSchema,
   schemaName,
   SCHEMA_VERSION,
 } from "../db/schema.js";
@@ -44,7 +43,7 @@ function appendNullableBigInt(appender: DuckDBAppender, value: number | undefine
   else appender.appendBigInt(BigInt(Math.trunc(value)));
 }
 
-/** Append one event row in the FIGHT_EVENTS_COLUMNS order. */
+/** Append one event row in SEED_TABLES.fight_events column order. */
 function appendEvent(appender: DuckDBAppender, fightId: number, ev: WclEvent): void {
   appender.appendInteger(fightId);
   appender.appendBigInt(BigInt(Math.trunc(ev.timestamp)));
@@ -63,8 +62,7 @@ export async function downloadReport(args: unknown) {
     const { report_code, force } = inputSchema.parse(args);
     assertValidReportCode(report_code);
 
-    const exists = await schemaExists(report_code);
-    if (exists && !force) {
+    if (!force && (await isDownloadComplete(report_code))) {
       const counts = await tableCounts(report_code);
       return ok({
         status: "already_downloaded",
@@ -74,9 +72,6 @@ export async function downloadReport(args: unknown) {
         tables: counts,
         hint: "Pass force=true to re-download. Use get_report_details to inspect, or execute_readonly_query to analyze.",
       });
-    }
-    if (exists && force) {
-      await dropSchema(report_code);
     }
 
     // 1. Fetch report header, fights, and actor master data.
@@ -91,97 +86,115 @@ export async function downloadReport(args: unknown) {
       );
     }
 
-    // 2. Create the schema and seed tables.
-    await createSchema(report_code);
-    await createSeedTables(report_code);
+    // 2-5 run in one transaction on a dedicated connection: a failure part-way
+    // (rate limit, network) rolls back and leaves any previous copy intact,
+    // rather than a half-filled schema that would look "already downloaded".
     const schema = schemaName(report_code);
-
-    // 3. Insert fights and actors.
-    const fights = report.fights ?? [];
-    for (const f of fights) {
-      await run(
-        `INSERT INTO ${q(schema)}.fights VALUES ` +
-          `($fight_id, $name, $encounter_id, $difficulty, $keystone_level, $kill, $fight_percentage, $start_time, $end_time)`,
-        {
-          fight_id: f.id,
-          name: f.name,
-          encounter_id: f.encounterID,
-          difficulty: f.difficulty,
-          keystone_level: f.keystoneLevel,
-          kill: f.kill,
-          fight_percentage: f.fightPercentage,
-          start_time: f.startTime,
-          end_time: f.endTime,
-        },
-      );
-    }
-
-    const actors = report.masterData?.actors ?? [];
-    for (const a of actors) {
-      await run(
-        `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $name, $type, $sub_type, $server)`,
-        {
-          actor_id: a.id,
-          name: a.name,
-          type: a.type,
-          sub_type: a.subType,
-          server: a.server,
-        },
-      );
-    }
-
-    // 4. Paginate the full event stream per fight, bulk-appending into fight_events.
-    const conn = await getConnection();
-    const appender = await conn.createAppender("fight_events", schema);
+    const conn = await openConnection();
     let totalEvents = 0;
+    const fights = report.fights ?? [];
     try {
-      for (const f of fights) {
-        let startTime = f.startTime;
-        const endTime = f.endTime;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const page = await client.query<FightEventsResponse>(FIGHT_EVENTS_QUERY, {
-            code: report_code,
-            fightID: f.id,
-            startTime,
-            endTime,
-            limit: EVENTS_PAGE_LIMIT,
-          });
-          const events = page.reportData.report?.events;
-          const data = events?.data ?? [];
-          for (const ev of data) {
-            appendEvent(appender, f.id, ev);
-            totalEvents++;
-          }
-          const next = events?.nextPageTimestamp;
-          if (next === null || next === undefined) break;
-          startTime = next;
-        }
-        appender.flushSync();
-      }
-    } finally {
-      appender.closeSync();
-    }
+      await conn.run("BEGIN TRANSACTION");
 
-    // 5. Insert the single report_details row now that totals are known.
-    await run(
-      `INSERT INTO ${q(schema)}.report_details VALUES ` +
-        `($report_code, $title, $owner, $zone_id, $zone_name, $region, $start_time, $end_time, $num_fights, $total_events, $schema_version, $downloaded_at)`,
-      {
-        report_code: report.code,
-        title: report.title,
-        owner: report.owner?.name ?? null,
-        zone_id: report.zone?.id ?? null,
-        zone_name: report.zone?.name ?? null,
-        region: report.region?.slug ?? null,
-        start_time: report.startTime,
-        end_time: report.endTime,
-        num_fights: fights.length,
-        total_events: totalEvents,
-        schema_version: SCHEMA_VERSION,
-        downloaded_at: Date.now(),
-      },
-    );
+      // 2. (Re)create the schema and seed tables. Dropping covers both force=true
+      // and a leftover incomplete download.
+      await conn.run(`DROP SCHEMA IF EXISTS ${quotedSchema(report_code)} CASCADE`);
+      await conn.run(`CREATE SCHEMA ${quotedSchema(report_code)}`);
+      await createSeedTables(conn, report_code);
+
+      // 3. Insert fights and actors.
+      for (const f of fights) {
+        await conn.run(
+          `INSERT INTO ${q(schema)}.fights VALUES ` +
+            `($fight_id, $name, $encounter_id, $difficulty, $keystone_level, $kill, $fight_percentage, $start_time, $end_time)`,
+          {
+            fight_id: f.id,
+            name: f.name,
+            encounter_id: f.encounterID,
+            difficulty: f.difficulty,
+            keystone_level: f.keystoneLevel,
+            kill: f.kill,
+            fight_percentage: f.fightPercentage,
+            start_time: f.startTime,
+            end_time: f.endTime,
+          },
+        );
+      }
+
+      const actors = report.masterData?.actors ?? [];
+      for (const a of actors) {
+        await conn.run(
+          `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $name, $type, $sub_type, $server)`,
+          {
+            actor_id: a.id,
+            name: a.name,
+            type: a.type,
+            sub_type: a.subType,
+            server: a.server,
+          },
+        );
+      }
+
+      // 4. Paginate the full event stream per fight, bulk-appending into fight_events.
+      const appender = await conn.createAppender("fight_events", schema);
+      try {
+        for (const f of fights) {
+          let startTime = f.startTime;
+          const endTime = f.endTime;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const page = await client.query<FightEventsResponse>(FIGHT_EVENTS_QUERY, {
+              code: report_code,
+              fightID: f.id,
+              startTime,
+              endTime,
+              limit: EVENTS_PAGE_LIMIT,
+            });
+            const events = page.reportData.report?.events;
+            const data = events?.data ?? [];
+            for (const ev of data) {
+              appendEvent(appender, f.id, ev);
+              totalEvents++;
+            }
+            const next = events?.nextPageTimestamp;
+            if (next === null || next === undefined) break;
+            startTime = next;
+          }
+          appender.flushSync();
+        }
+      } finally {
+        appender.closeSync();
+      }
+
+      // 5. Insert the single report_details row now that totals are known.
+      await conn.run(
+        `INSERT INTO ${q(schema)}.report_details VALUES ` +
+          `($report_code, $title, $owner, $zone_id, $zone_name, $region, $start_time, $end_time, $num_fights, $total_events, $schema_version, $downloaded_at)`,
+        {
+          report_code: report.code,
+          title: report.title,
+          owner: report.owner?.name ?? null,
+          zone_id: report.zone?.id ?? null,
+          zone_name: report.zone?.name ?? null,
+          region: report.region?.slug ?? null,
+          start_time: report.startTime,
+          end_time: report.endTime,
+          num_fights: fights.length,
+          total_events: totalEvents,
+          schema_version: SCHEMA_VERSION,
+          downloaded_at: Date.now(),
+        },
+      );
+
+      await conn.run("COMMIT");
+    } catch (err) {
+      await conn.run("ROLLBACK").catch(() => {
+        /* transaction may already be aborted */
+      });
+      throw err;
+    } finally {
+      conn.closeSync();
+    }
 
     const counts = await tableCounts(report_code);
     return ok({

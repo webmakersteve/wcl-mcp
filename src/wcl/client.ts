@@ -33,6 +33,15 @@ export class WclError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Parse a Retry-After header: delay-seconds or an HTTP-date. Undefined if unusable. */
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
 interface CachedToken {
   accessToken: string;
   expiresAt: number;
@@ -155,8 +164,7 @@ export class WclClient {
       throw new WclError("Access token expired or invalid", "auth_expired", 401);
     }
     if (res.status === 429) {
-      const retryAfter = res.headers.get("Retry-After");
-      const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
+      const retryAfterMs = parseRetryAfter(res.headers.get("Retry-After"));
       throw new WclError("Rate limited", "rate_limited", 429, retryAfterMs);
     }
     if (res.status >= 500) {

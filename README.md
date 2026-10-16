@@ -31,6 +31,26 @@ It runs locally because it uses your Warcraft Logs API credentials.
 | `get_report_details` | Describe a downloaded report: tables, schemas, stats, semantic guide. |
 | `execute_readonly_query` | Run a single read-only SQL statement scoped to one report. |
 | `delete_local_report` | Drop a report's local schema/tables. |
+| `lookup_spells` | Spell names, rendered descriptions, and mechanics (cooldown, charges, cost, duration...) by id or name. |
+| `sync_game_data` | Download spell data for the latest live build (automatic on first `lookup_spells`). |
+
+## Spell data
+
+Spell ids in logs (`fight_events.ability_game_id`) are resolved locally from WoW client data
+rather than per-spell web APIs. `sync_game_data` downloads ~15 DB2 tables (SpellName, Spell,
+SpellEffect, SpellMisc, cooldowns, charges, costs, ...) as CSV from
+[wago.tools](https://wago.tools) for the current live build — one request per table, ~150 MB,
+about 25 s — into a shared `gamedata` schema in the same DuckDB file (~55 MB). It's a no-op until
+the next game patch.
+
+- `lookup_spells` renders description templates (`$s1`, `$d`, `$@spelldesc…`, `${…}`
+  expressions, `$?a123[…][…]` conditionals). Character-dependent values are shown as
+  `(388% of Spell Power)`; talent-dependent text as `[with Pyrotechnics: …]`; values only known at
+  runtime as `(varies)`.
+- `execute_readonly_query` can join `gamedata.<table>` alongside the report's tables, e.g.
+  `JOIN gamedata.spell s ON s.spell_id = e.ability_game_id`. `get_report_details` documents them.
+- Data is the client build's DB2s as exported by wago.tools; server-side hotfixes may not be
+  reflected.
 
 ## Setup
 
@@ -99,6 +119,8 @@ LIMIT 10;
 
 - `fight_events.raw` holds the complete event JSON; query fields not promoted to columns with
   `json_extract(raw, '$.field')` / `json_extract_string(...)`.
+- DuckDB runs with `enable_external_access=false`, so queries can't read local files or the network
+  (`read_csv`, `read_text`, `glob`, `ATTACH`, ...). Only the downloaded reports are reachable.
 - Player-name search isn't supported by the WCL API; download a report and filter via SQL instead.
 - Schema version is `v1`; the `_v<N>` suffix on each report schema allows future layout changes.
 

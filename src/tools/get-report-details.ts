@@ -8,6 +8,8 @@ import {
   SCHEMA_VERSION,
 } from "../db/schema.js";
 import { SEED_TABLES } from "../db/seeds.js";
+import { getGameDataStatus } from "../gamedata/sync.js";
+import { gameDataTableDocs } from "../gamedata/tables.js";
 import { guard, ok, fail } from "./result.js";
 
 export const getReportDetailsShape = {
@@ -70,6 +72,8 @@ export async function getReportDetails(args: unknown) {
       tables.push({ table, description: spec.description, row_count: rowCount, columns });
     }
 
+    const gameData = await getGameDataStatus();
+
     return ok({
       report_code,
       schema: schemaName(report_code),
@@ -79,6 +83,19 @@ export async function getReportDetails(args: unknown) {
         "(search_path is set to this report's schema). Join fight_events.source_id/target_id to " +
         "actors.actor_id, and fight_events.fight_id to fights.fight_id.",
       tables,
+      game_data: gameData
+        ? {
+            build: gameData.build,
+            query_hint:
+              "Shared WoW spell data, queryable alongside this report as gamedata.<table>. " +
+              "Join fight_events.ability_game_id = gamedata.spell.spell_id for names. " +
+              "Per-spell tables can have one row per difficulty; filter difficulty_id = 0 for the default.",
+            tables: gameDataTableDocs(),
+          }
+        : {
+            synced: false,
+            hint: "Spell data isn't downloaded yet. lookup_spells fetches it on first use, or call sync_game_data.",
+          },
     });
   });
 }

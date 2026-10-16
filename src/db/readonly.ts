@@ -4,9 +4,12 @@
  *  1. exactly one statement (reject stacked statements),
  *  2. leading keyword must be in the read-only allowlist,
  *  3. reject any token from the mutating/side-effecting denylist.
- * Combined with per-report search_path scoping in the tool, this keeps queries
- * read-only and contained.
+ * Filesystem/network access (read_text, read_csv, glob, ...) is blocked separately
+ * by opening DuckDB with enable_external_access=false (see db/duck.ts), and
+ * assertWithinSchema keeps a query from reading other reports' schemas.
  */
+
+import type { DuckDBConnection } from "@duckdb/node-api";
 
 const ALLOWED_LEADING = new Set([
   "SELECT",
@@ -91,4 +94,61 @@ export function assertReadOnly(sqlInput: string): string {
   }
 
   return withoutTrailing;
+}
+
+/** Table functions that take SQL or a table name as a string, hiding it from the AST check. */
+const DENY_TABLE_FUNCTIONS = new Set(["query", "query_table"]);
+
+/**
+ * Reject table references outside `allowedSchemas`. search_path only sets the
+ * default schema, so a qualified name like "r_other_v1".fight_events would
+ * otherwise reach another report. Parses with json_serialize_sql and walks the AST.
+ * Matching is case-insensitive, as DuckDB's own identifier resolution is.
+ */
+export async function assertWithinSchemas(
+  conn: DuckDBConnection,
+  statement: string,
+  allowedSchemas: string[],
+): Promise<void> {
+  const allowed = new Set(allowedSchemas.map((s) => s.toLowerCase()));
+  // json_serialize_sql only handles SELECT-shaped statements; check what EXPLAIN wraps.
+  const inner = statement.replace(/^\s*EXPLAIN(\s+ANALYZE)?\s+/i, "");
+  const reader = await conn.runAndReadAll("SELECT json_serialize_sql($sql::VARCHAR) AS ast", {
+    sql: inner,
+  });
+  const ast = JSON.parse(String(reader.getRowObjects()[0]?.ast)) as {
+    error?: boolean;
+    error_message?: string;
+  };
+  if (ast.error) {
+    throw new ReadOnlyViolation(`Could not parse query: ${ast.error_message ?? "unknown error"}`);
+  }
+
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    const n = node as Record<string, unknown>;
+    if (n.type === "BASE_TABLE") {
+      const catalog = String(n.catalog_name ?? "");
+      const tableSchema = String(n.schema_name ?? "");
+      if (catalog !== "" || (tableSchema !== "" && !allowed.has(tableSchema.toLowerCase()))) {
+        const ref = [catalog, tableSchema, n.table_name].filter(Boolean).join(".");
+        throw new ReadOnlyViolation(
+          `Table ${ref} is outside this report. Reference report tables unqualified ` +
+            `(e.g. fight_events) and game data as gamedata.<table>.`,
+        );
+      }
+    }
+    if (n.type === "TABLE_FUNCTION") {
+      const fn = (n.function as { function_name?: string } | undefined)?.function_name;
+      if (fn && DENY_TABLE_FUNCTIONS.has(fn.toLowerCase())) {
+        throw new ReadOnlyViolation(`Table function ${fn}() is not allowed.`);
+      }
+    }
+    Object.values(n).forEach(visit);
+  };
+  visit(ast);
 }

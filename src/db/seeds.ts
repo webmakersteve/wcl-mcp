@@ -1,5 +1,4 @@
-import { quotedIdentifier } from "@duckdb/node-api";
-import { run } from "./duck.js";
+import { quotedIdentifier, type DuckDBConnection } from "@duckdb/node-api";
 import { quotedSchema } from "./schema.js";
 
 export interface ColumnSpec {
@@ -90,11 +89,6 @@ export const SEED_TABLES: Record<string, TableSpec> = {
 
 export type SeedTableName = keyof typeof SEED_TABLES;
 
-/** The fight_events column order — used by the Appender during download. */
-export const FIGHT_EVENTS_COLUMNS = Object.keys(
-  SEED_TABLES.fight_events.columns,
-) as Array<keyof typeof SEED_TABLES.fight_events.columns>;
-
 function createTableSql(code: string, table: string, spec: TableSpec): string {
   const cols = Object.entries(spec.columns)
     .map(([name, c]) => `  ${quotedIdentifier(name)} ${c.type}`)
@@ -102,9 +96,12 @@ function createTableSql(code: string, table: string, spec: TableSpec): string {
   return `CREATE TABLE ${quotedSchema(code)}.${quotedIdentifier(table)} (\n${cols}\n)`;
 }
 
-/** Create all seed tables for a report (schema must already exist). */
-export async function createSeedTables(code: string): Promise<void> {
+/**
+ * Create all seed tables for a report (schema must already exist). Runs on the
+ * caller's connection so it can participate in the download transaction.
+ */
+export async function createSeedTables(conn: DuckDBConnection, code: string): Promise<void> {
   for (const [table, spec] of Object.entries(SEED_TABLES)) {
-    await run(createTableSql(code, table, spec));
+    await conn.run(createTableSql(code, table, spec));
   }
 }

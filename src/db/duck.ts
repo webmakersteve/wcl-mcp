@@ -3,28 +3,42 @@ import { dirname, resolve } from "node:path";
 import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { getConfig } from "../config.js";
 
+let instancePromise: Promise<DuckDBInstance> | undefined;
 let connectionPromise: Promise<DuckDBConnection> | undefined;
 
 /**
- * Lazily open (once) the single persistent DuckDB file and return a shared connection.
- * The parent directory is created if needed. The `json` extension is loaded so the
- * fight_events.raw text column can be queried with JSON functions.
+ * Lazily open (once) the single persistent DuckDB file. The parent directory is
+ * created if needed. External access is disabled so SQL can't touch the
+ * filesystem or network (read_text, read_csv, glob, ATTACH, INSTALL, ...); the
+ * json extension used for fight_events.raw is built into the node bindings.
  */
-export function getConnection(): Promise<DuckDBConnection> {
-  if (!connectionPromise) {
-    connectionPromise = (async () => {
+function getInstance(): Promise<DuckDBInstance> {
+  if (!instancePromise) {
+    instancePromise = (async () => {
       const { dbPath } = getConfig();
       const absPath = resolve(process.cwd(), dbPath);
       mkdirSync(dirname(absPath), { recursive: true });
-      const instance = await DuckDBInstance.create(absPath);
-      const connection = await instance.connect();
-      await connection.run("INSTALL json; LOAD json;").catch(() => {
-        /* json is built-in on most builds; ignore if already present */
-      });
-      return connection;
+      return DuckDBInstance.create(absPath, { enable_external_access: "false" });
     })();
   }
+  return instancePromise;
+}
+
+/** Shared connection for short, stateless statements. */
+export function getConnection(): Promise<DuckDBConnection> {
+  if (!connectionPromise) {
+    connectionPromise = getInstance().then((instance) => instance.connect());
+  }
   return connectionPromise;
+}
+
+/**
+ * Open a dedicated connection for work that holds connection-local state
+ * (a transaction, a search_path). Caller must closeSync() it when done.
+ */
+export async function openConnection(): Promise<DuckDBConnection> {
+  const instance = await getInstance();
+  return instance.connect();
 }
 
 /** Run a statement with no result handling. */

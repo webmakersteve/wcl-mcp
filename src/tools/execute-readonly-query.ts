@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { getConnection } from "../db/duck.js";
+import { openConnection } from "../db/duck.js";
 import {
   assertValidReportCode,
   schemaExists,
   schemaName,
 } from "../db/schema.js";
-import { assertReadOnly, ReadOnlyViolation } from "../db/readonly.js";
+import { assertReadOnly, assertWithinSchemas, ReadOnlyViolation } from "../db/readonly.js";
+import { GAMEDATA_SCHEMA } from "../gamedata/tables.js";
 import { guard, ok, fail } from "./result.js";
 
 /** Cap returned rows so a missing LIMIT can't flood the context window. */
@@ -20,7 +21,8 @@ export const executeReadonlyQueryShape = {
     .describe(
       "A single read-only DuckDB SQL statement (SELECT/WITH/FROM/DESCRIBE/SUMMARIZE/...). " +
         "Reference the seed tables unqualified (fight_events, fights, actors, report_details) — " +
-        "search_path is scoped to this report.",
+        "search_path is scoped to this report. Spell data (once synced) is in the shared gamedata " +
+        "schema, e.g. JOIN gamedata.spell s ON s.spell_id = fight_events.ability_game_id.",
     ),
 };
 
@@ -48,11 +50,19 @@ export async function executeReadonlyQuery(args: unknown) {
     }
 
     const schema = schemaName(report_code);
-    const conn = await getConnection();
-
-    // Scope unqualified table names to this report's schema, then restore.
-    await conn.run(`SET search_path = '${schema}'`);
+    // A per-call connection keeps search_path from leaking between concurrent calls.
+    const conn = await openConnection();
     try {
+      // Scope unqualified table names to this report's schema.
+      await conn.run(`SET search_path = '${schema}'`);
+      try {
+        await assertWithinSchemas(conn, statement, [schema, GAMEDATA_SCHEMA]);
+      } catch (err) {
+        if (err instanceof ReadOnlyViolation) {
+          return fail(`Rejected (read-only guard): ${err.message}`);
+        }
+        throw err;
+      }
       const reader = await conn.runAndReadUntil(statement, MAX_ROWS + 1);
       const allRows = reader.getRowObjectsJson() as Record<string, unknown>[];
       const truncated = allRows.length > MAX_ROWS;
@@ -72,7 +82,7 @@ export async function executeReadonlyQuery(args: unknown) {
           : {}),
       });
     } finally {
-      await conn.run("RESET search_path");
+      conn.closeSync();
     }
   });
 }
