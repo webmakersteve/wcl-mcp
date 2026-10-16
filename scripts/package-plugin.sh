@@ -26,6 +26,16 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/.claude-plugin"
 cp "$repo/.claude-plugin/plugin.json" "$stage/.claude-plugin/"
 cp "$repo/package.json" "$repo/package-lock.json" "$repo/README.md" "$stage/"
+
+# Ship runtime dependencies only: drop devDependencies (TypeScript, tsx, ...) from package.json and
+# prune them from the lockfile. --package-lock-only keeps every remaining package at the version
+# the repo's lockfile pins; Claude Code skips its install if package.json and the lockfile differ.
+(cd "$stage" && node -e '
+  const fs = require("fs");
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  delete pkg.devDependencies;
+  fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+' && npm install --package-lock-only --ignore-scripts --no-audit --no-fund --loglevel=error >&2)
 # Runtime JS (and source maps for stack traces); type declarations aren't needed.
 rsync -a --exclude '*.d.ts' --exclude '*.d.ts.map' "$repo/dist/" "$stage/dist/"
 
