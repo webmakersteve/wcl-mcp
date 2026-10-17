@@ -10,9 +10,17 @@ import { getConfig } from "../config.js";
 //
 // - Reads use a READ_ONLY instance, closed as soon as no read is in flight (reopening costs
 //   ~5 ms), so a steady stream of queries leaves gaps for another process to take the write lock.
-// - Writes open a READ_WRITE instance, run, and close it. Slow work (network fetches) is staged
-//   into a private scratch file first (stageThenWrite), so the write lock covers only the copy.
+// - Writes attach the file read-write to a private in-memory instance, run, and detach it. Slow
+//   work (network fetches) is staged into a private scratch file first (stageThenWrite), so the
+//   write lock covers only the copy.
 // - Opening waits out another process's conflicting lock, up to lockTimeoutMs.
+//
+// Why attach rather than open the file directly: an appender keeps its DuckDB instance alive
+// until it's garbage collected, even after closeSync() (the bindings don't expose
+// duckdb_appender_destroy), and an instance opened on the file holds the file lock while it's
+// alive. So after any write that used an appender, this process kept the database locked:
+// other processes timed out, and on Windows, where locks belong to file handles rather than
+// processes, so did this process's next open. DETACH releases the file whatever still lingers.
 //
 // Within this process, writes are serialized and a write waits for in-flight reads to finish;
 // reads started meanwhile wait for the write. Don't call read/queryRows inside a write
@@ -22,6 +30,8 @@ const RETRY_MIN_MS = 50;
 const RETRY_MAX_MS = 1_000;
 /** Attach name of the scratch database inside a stageThenWrite apply callback. */
 export const STAGING_DB = "staging";
+/** Attach name of the database file inside a write's in-memory host instance (made the default). */
+const MAIN_DB = "wcl";
 const STAGING_PREFIX = ".staging-";
 
 let readInstance: Promise<DuckDBInstance> | undefined;
@@ -37,14 +47,14 @@ function isLockConflict(err: unknown): boolean {
   return err instanceof Error && err.message.includes("Could not set lock on file");
 }
 
-/** Open the database file, retrying while another process holds a conflicting lock. */
-async function openInstance(options: Record<string, string>): Promise<DuckDBInstance> {
+/** Run `open`, retrying while another process holds a conflicting lock on the database file. */
+async function withLockRetry<T>(open: () => Promise<T>): Promise<T> {
   const { dbPath, lockTimeoutMs } = getConfig();
   const deadline = Date.now() + lockTimeoutMs;
   let delay = RETRY_MIN_MS;
   for (;;) {
     try {
-      return await DuckDBInstance.create(dbPath, options);
+      return await open();
     } catch (err) {
       if (!isLockConflict(err)) throw err;
       if (Date.now() >= deadline) {
@@ -57,6 +67,53 @@ async function openInstance(options: Record<string, string>): Promise<DuckDBInst
       await sleep(delay);
       delay = Math.min(delay * 2, RETRY_MAX_MS);
     }
+  }
+}
+
+/** Open the database file directly (used for reads), waiting out conflicting locks. */
+function openInstance(options: Record<string, string>): Promise<DuckDBInstance> {
+  return withLockRetry(() => DuckDBInstance.create(getConfig().dbPath, options));
+}
+
+interface Attached {
+  instance: DuckDBInstance;
+  conn: DuckDBConnection;
+  alias: string;
+}
+
+const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+/**
+ * Attach the database at `path` read-write to a new in-memory instance and make it the default
+ * catalog, so unqualified SQL (and appenders) target the file. Pair with detach().
+ */
+async function attach(path: string, alias: string, retry: boolean): Promise<Attached> {
+  const instance = await DuckDBInstance.create(":memory:");
+  let conn: DuckDBConnection | undefined;
+  try {
+    conn = await instance.connect();
+    const c = conn;
+    const run = () => c.run(`ATTACH ${sqlString(path)} AS ${alias}`);
+    await (retry ? withLockRetry(run) : run());
+    await c.run(`USE ${alias}`);
+    return { instance, conn: c, alias };
+  } catch (err) {
+    conn?.closeSync();
+    instance.closeSync();
+    throw err;
+  }
+}
+
+/** Detach the file (releasing its lock even if an appender lingers), then close the instance. */
+async function detach({ instance, conn, alias }: Attached): Promise<void> {
+  try {
+    // An open transaction (a callback failed mid-way) would block DETACH.
+    await conn.run("ROLLBACK").catch(() => {});
+    await conn.run("USE memory");
+    await conn.run(`DETACH ${alias}`);
+  } finally {
+    conn.closeSync();
+    instance.closeSync();
   }
 }
 
@@ -124,8 +181,9 @@ export async function read<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promi
 }
 
 /**
- * Run `fn` holding the write lock: opens the file read-write (waiting for other processes to
- * release it), runs, and closes it again. Keep `fn` short — other processes can't read meanwhile.
+ * Run `fn` holding the write lock: attaches the file read-write as the default catalog (waiting
+ * for other processes to release it), runs, and detaches it again. Keep `fn` short — other
+ * processes can't read meanwhile.
  * External access stays enabled here (only our own SQL runs on this connection) so
  * stageThenWrite can ATTACH its scratch file.
  */
@@ -135,16 +193,11 @@ export function write<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promise<T>
     while (activeReads > 0) await new Promise<void>((resolve) => (readsDrained = resolve));
     await closeReadInstance();
     mkdirSync(dirname(getConfig().dbPath), { recursive: true });
-    const instance = await openInstance({});
+    const attached = await attach(getConfig().dbPath, MAIN_DB, true);
     try {
-      const conn = await instance.connect();
-      try {
-        return await fn(conn);
-      } finally {
-        conn.closeSync();
-      }
+      return await fn(attached.conn);
     } finally {
-      instance.closeSync();
+      await detach(attached);
     }
   });
   writing = run;
@@ -169,16 +222,13 @@ export async function stageThenWrite<T>(
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${STAGING_PREFIX}${process.pid}-${randomUUID()}.duckdb`);
   try {
-    const instance = await DuckDBInstance.create(path);
+    // Attached rather than opened, like writes: the stage's appenders would otherwise keep the
+    // scratch file locked, so the ATTACH below and the cleanup would fail on Windows.
+    const staged = await attach(path, "stage", false);
     try {
-      const conn = await instance.connect();
-      try {
-        await stage(conn);
-      } finally {
-        conn.closeSync();
-      }
+      await stage(staged.conn);
     } finally {
-      instance.closeSync();
+      await detach(staged);
     }
     return await write(async (conn) => {
       await conn.run(`ATTACH '${path.replaceAll("'", "''")}' AS ${STAGING_DB} (READ_ONLY)`);
