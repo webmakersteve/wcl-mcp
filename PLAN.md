@@ -183,7 +183,7 @@ write our own version-aware parser.
 
 ## Unified schema (SCHEMA_VERSION 3)
 - **Local importer emits WCL-shaped events**: same `type` names, same `raw` JSON keys, same id
-  semantics (actor ids, 1-based `*_instance`, ms relative to report start). Fields WCL derives
+  semantics (actor ids, 1-based `*_instance`, ms relative to report start). Flags WCL derives
   that we can't (e.g. `cast.fake`) are omitted, never faked. Raw-only data (positions, HP from
   advanced logging) goes under `raw.local` so it can't collide with WCL keys.
 - Fight layout mirrors WCL: one fight per M+ key (bosses as `dungeonencounterstart/end` events),
@@ -194,11 +194,11 @@ write our own version-aware parser.
     (e.g. Kings' Rest = `61762` on fights but `11762` on `dungeonstart`) aren't comparable across sources.
   - `actors.guid`, `actors.player_key` (`Name-Server`): the documented cross-report player key.
     Verify WCL player `game_id` == numeric part of the player GUID; if so, it's a second key.
-- Local schemas: `l_<hash>_v3`, hash of (file identity, segment start offset).
+- Local schemas: `l_<hash>_v<N>`, hash of the file's first two lines (stable as it grows or moves).
 - No compare tool. `execute_readonly_query` accepts `reports: { alias: code, ... }` (any number,
   any source) in place of a single `report_code`. Per call, the server creates TEMP views on the
   call's connection and drops them after, so the user SQL guard is unchanged:
-  - `<alias>.<table>` per report;
+  - `<alias>_<table>` per report (DuckDB temp views can't live in a custom schema);
   - `all_fights` / `all_actors` / `all_events`: UNION ALL across reports with a `report` column.
     `all_events` adds stable keys, since actor ids are per-report: `source_key`/`target_key`
     (`player_key` for players, `npc:<game_id>[:instance]` otherwise), `source_owner_key` (pet
@@ -209,26 +209,31 @@ write our own version-aware parser.
 - Streaming line reader → tokenizer (nested `[]`/`()`/quoted strings) → per-`COMBAT_LOG_VERSION`
   field layouts for prefixes/suffixes → WCL-shaped event mapper.
 - Stateful resolution: GUID → actor id (with NPC `game_id` + spawn UID → instance), pet ownership
-  (`SPELL_SUMMON` + advanced-logging owner GUID), death killer (last damage taken), `hitType`
+  (`SPELL_SUMMON` + advanced-logging owner GUID), death killer (the last overkilling hit, as WCL does), `hitType`
   from crit/glancing flags, segmenter (ENCOUNTER_*, CHALLENGE_MODE_*, trash heuristics).
 - Requires Advanced Combat Logging; detect when it's off and record that in `report_details`.
 
 ## Directory watcher (live auto-import)
 - Tools: `watch_logs(dir?)` / `unwatch_logs(dir?)` / `watch_status`. No env var: watched
-  directories persist in DuckDB (`local.watched_dirs(path, added_at, enabled)`), not just in
+  directories persist in DuckDB (`local_logs.watched_dirs(path, added_at, enabled)`), not just in
   memory, so on server boot every enabled directory resumes watching and catches up with no
   re-configuration. `watch_logs` with no `dir` probes the per-OS default install paths
   (`…/World of Warcraft/_retail_/Logs`) and errors listing what it tried if none exist.
-- **Runs inside the MCP server process.** DuckDB allows one read-write process per file, so a
-  separate daemon would lock the server out. Consequence: it only runs while a session is open;
-  on start it **catches up** on everything appended since the last run.
+- **Runs inside the MCP server process** (one per session), so it only runs while a session is
+  open; on start it **catches up** on everything appended since the last run. Since upstream's
+  multi-process DB model (short-lived write locks), several sessions may watch the same folder:
+  each commit runs under the write lock and is a compare-and-set on the stored offset, so only
+  one process applies each fight (the others report `superseded`).
 - `fs.watch` the directory for new `WoWCombatLog-*.txt` files (WoW starts a new file each time
   logging is enabled) and tail appended bytes; keep a partial-line buffer (WoW flushes in chunks).
-- Ingest state table `local.ingest_files(path, dev/inode, size, byte_offset, segment_start_offset,
-  updated_at)`. Detect truncation/replacement via inode or size shrink → rescan from 0.
+- Ingest state table `local_logs.ingest_files(report_code, path, file_size, byte_offset,
+  schema_version, status, updated_at)`, keyed by report code (a hash of the file's first two
+  lines, so a moved/renamed file resumes). A size shrink or schema version change → rescan from 0.
+  `status` is active / complete / ignored (deleted by the user: the watcher skips it).
 - Commit granularity: one transaction per **completed segment** (key end, boss pull end, trash
-  segment end), so a crash/restart resumes from `segment_start_offset` and re-parses only the open
-  segment; parser state never needs checkpointing. A first version won't show in-progress pulls.
+  segment end), storing the byte offset just past the segment's last line, so a crash/restart
+  re-parses only the open segment; parser state never needs checkpointing. Between fights the
+  offset advances to the end of what was read. A first version won't show in-progress pulls.
   A later `live_*` staging table could expose the open segment for "what's happening now" queries.
 - Idempotent: segment schema name is deterministic, so re-import replaces, never duplicates.
 
@@ -239,7 +244,7 @@ and killers, pet attribution, instance numbering (MDT `route_units` join must st
 That diff becomes the regression test.
 
 **Parity is approximate by design.** WCL runs a rules engine on top of the raw events: it drops or
-reattributes damage to stop cheese, invents `fake` casts, and so on. We don't replicate it. Match
+reattributes damage to stop cheese, flags casts as `fake`, and so on. We don't replicate it. Match
 WCL's *shape* (types, keys, id semantics, fight windows) and keep counts and totals close. The
 regression test asserts tolerances (e.g. per-type counts and per-player damage/healing within a
 few %), not equality. Deliberate differences are listed in the semantic layer so the agent
@@ -259,9 +264,22 @@ Log header: `COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.5`;
   exact). Swing ability = `1` when physical, `-school` otherwise (e.g. `-8` nature, `-32` shadow).
   Environmental = ability `3`. WCL has 118 more swing events than `SWING_DAMAGE`+`SWING_MISSED`
   (~0.06% of damage events) plus 3 single-event diffs. Within tolerance; not chased.
-- `cast` = `SPELL_CAST_SUCCESS` + one `melee:true` cast per swing (`SWING_DAMAGE`+`SWING_MISSED`)
-  + `fake:true` casts that WCL infers from its own per-ability table (e.g. Mutilate off-hand,
-  Charge, Skull Bash). We can't reproduce those, so local imports omit them; for parity, compare casts
-  with `fake IS NULL`.
+- `cast` = `SPELL_CAST_SUCCESS` + one `melee:true` cast per swing (`SWING_DAMAGE`+`SWING_MISSED`),
+  exactly. 1,178 of those casts carry `fake:true` on WCL (proc/secondary casts per its own
+  per-ability table, e.g. Mutilate off-hand, Charge, Skull Bash); local imports don't flag them.
 - WCL M+ `fight_percentage` (100 on a timed key, 12.07 on the abandoned one) has an unknown meaning;
-  investigate before mapping.
+  left null for local keys.
+
+### Results of the implementation (same matched pair)
+- Import: 481k lines in ~3 s; re-import is a no-op; importing the file in 7 chunks split mid-line
+  (live) gives exactly the one-shot result; the watcher on a growing file does too.
+- Per fight: identical windows (to the ms) incl. the abandoned key; events 229,741 vs 229,767 and
+  247,906 vs 247,995. Every event type matches exactly except `damage` (the 115 above).
+- Per player: healing identical; damage 0.2–1.1% higher locally (WCL's rule engine).
+- Deaths 339 = 339; killers 214 vs 230 (the overkill rule covers 214 of WCL's 230).
+- Found along the way: the DuckDB node bindings bind JS numbers as 32-bit INTEGER, wrapping epoch
+  ms / byte offsets / large GUID ids. All BIGINT params now go through `big()` (db/duck.ts); this
+  also fixes WCL `report_details.start_time` and MDT's `synced_at_ms`, which were stored wrapped.
+- Found along the way: recreating a schema that an earlier process wrote to disk fails to commit
+  inside a transaction ("Could not commit creation of dependency"). Local imports create tables
+  before their data transaction; download_report's drop+create in one transaction is unaffected.

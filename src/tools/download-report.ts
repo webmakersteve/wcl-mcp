@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { DuckDBAppender, DuckDBConnection } from "@duckdb/node-api";
-import { queryRows, replaceSchemaFromStaging, stageThenWrite } from "../db/duck.js";
+import { big, queryRows, replaceSchemaFromStaging, stageThenWrite } from "../db/duck.js";
 import {
-  assertValidReportCode,
+  assertWclReportCode,
   expireReports,
   expiresAt,
   isDownloadComplete,
@@ -94,7 +94,7 @@ function appendHealthSeries(
 export async function downloadReport(args: unknown) {
   return guard(async () => {
     const { report_code, force } = inputSchema.parse(args);
-    assertValidReportCode(report_code);
+    assertWclReportCode(report_code);
     // Drop expired reports first, so an expired copy of this one is downloaded fresh.
     await expireReports();
 
@@ -128,7 +128,7 @@ export async function downloadReport(args: unknown) {
       return fail(`Report '${report_code}' not found (${hint}).`);
     }
 
-    // 2-6 build the report in a private scratch database, holding no lock on the shared file
+    // 2-7 build the report in a private scratch database, holding no lock on the shared file
     // while paging the API. Only once it's complete is it swapped in under the write lock, in
     // one transaction, so a failure part-way (rate limit, network) leaves any previous copy
     // intact rather than a half-filled schema that would look "already downloaded".
@@ -145,7 +145,7 @@ export async function downloadReport(args: unknown) {
       for (const f of fights) {
         await conn.run(
           `INSERT INTO ${q(schema)}.fights VALUES ` +
-            `($fight_id, $name, $encounter_id, $difficulty, $keystone_level, $kill, $fight_percentage, $start_time, $end_time)`,
+            `($fight_id, $name, $encounter_id, $difficulty, $keystone_level, $kill, $fight_percentage, $start_time, $end_time, NULL, NULL)`,
           {
             fight_id: f.id,
             name: f.name,
@@ -154,8 +154,8 @@ export async function downloadReport(args: unknown) {
             keystone_level: f.keystoneLevel,
             kill: f.kill,
             fight_percentage: f.fightPercentage,
-            start_time: bigint(f.startTime),
-            end_time: bigint(f.endTime),
+            start_time: big(f.startTime),
+            end_time: big(f.endTime),
           },
         );
       }
@@ -163,15 +163,16 @@ export async function downloadReport(args: unknown) {
       const actors = report.masterData?.actors ?? [];
       for (const a of actors) {
         await conn.run(
-          `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $game_id, $pet_owner, $name, $type, $sub_type, $server)`,
+          `INSERT INTO ${q(schema)}.actors VALUES ($actor_id, $game_id, $pet_owner, $name, $type, $sub_type, $server, NULL, $player_key)`,
           {
             actor_id: a.id,
-            game_id: a.gameID,
+            game_id: big(a.gameID),
             pet_owner: a.petOwner,
             name: a.name,
             type: a.type,
             sub_type: a.subType,
             server: a.server,
+            player_key: a.type === "Player" && a.server ? `${a.name}-${a.server}` : null,
           },
         );
       }
@@ -229,10 +230,18 @@ export async function downloadReport(args: unknown) {
         healthAppender.closeSync();
       }
 
-      // 6. Insert the single report_details row now that totals are known.
+      // 6. M+ keys: WCL's dungeonstart encounterID is 10000 + the game's instance id.
+      await conn.run(
+        `UPDATE ${q(schema)}.fights f SET game_zone_id = d.zone FROM (
+           SELECT fight_id, any_value(json_extract(raw, '$.encounterID')::INTEGER - 10000) AS zone
+           FROM ${q(schema)}.fight_events WHERE type = 'dungeonstart' GROUP BY fight_id
+         ) d WHERE f.fight_id = d.fight_id AND d.zone > 0`,
+      );
+
+      // 7. Insert the single report_details row now that totals are known.
       await conn.run(
         `INSERT INTO ${q(schema)}.report_details VALUES ` +
-          `($report_code, $title, $owner, $zone_id, $zone_name, $region, $start_time, $end_time, $num_fights, $total_events, $schema_version, $downloaded_at)`,
+          `($report_code, $title, $owner, $zone_id, $zone_name, $region, $start_time, $end_time, $num_fights, $total_events, $schema_version, $downloaded_at, 'wcl', NULL)`,
         {
           report_code: report.code,
           title: report.title,
@@ -240,12 +249,12 @@ export async function downloadReport(args: unknown) {
           zone_id: report.zone?.id ?? null,
           zone_name: report.zone?.name ?? null,
           region: report.region?.slug ?? null,
-          start_time: bigint(report.startTime),
-          end_time: bigint(report.endTime),
+          start_time: big(report.startTime),
+          end_time: big(report.endTime),
           num_fights: fights.length,
-          total_events: bigint(totalEvents),
+          total_events: big(totalEvents),
           schema_version: SCHEMA_VERSION,
-          downloaded_at: bigint(downloadedAt),
+          downloaded_at: big(downloadedAt),
         },
       );
     };
@@ -266,14 +275,6 @@ export async function downloadReport(args: unknown) {
       hint: "Use get_report_details to see the schema + semantic guide, then execute_readonly_query to analyze.",
     });
   });
-}
-
-/**
- * Bind a BIGINT parameter. A plain JS number is bound as a 32-bit INTEGER and wraps, which
- * corrupts epoch-millisecond values; a bigint binds as BIGINT.
- */
-function bigint(value: number): bigint {
-  return BigInt(Math.trunc(value));
 }
 
 function isoOrNull(ms: number | null): string | null {

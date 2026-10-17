@@ -71,6 +71,14 @@ async function ensureDbFile(): Promise<void> {
   if (!existsSync(getConfig().dbPath)) await write(async () => {});
 }
 
+/**
+ * A BIGINT query parameter. The bindings bind plain JS numbers as 32-bit INTEGER, silently
+ * wrapping larger values (epoch ms, byte offsets, player GUID ids), so pass those as bigint.
+ */
+export function big(value: number | null | undefined): bigint | null {
+  return value === null || value === undefined ? null : BigInt(Math.trunc(value));
+}
+
 /** Run a query on `conn` and return rows as JSON-friendly objects keyed by column name. */
 export async function readRows(
   conn: DuckDBConnection,

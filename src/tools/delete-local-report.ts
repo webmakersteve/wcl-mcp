@@ -1,11 +1,18 @@
 import { z } from "zod";
-import { assertValidReportCode, dropRouteSchema, dropSchema, schemaName } from "../db/schema.js";
+import {
+  assertValidReportCode,
+  dropRouteSchema,
+  dropSchema,
+  isLocalReportCode,
+  schemaName,
+} from "../db/schema.js";
+import { getIngest, setIngest } from "../local/store.js";
 import { guard, ok } from "./result.js";
 
 export const deleteLocalReportShape = {
   report_code: z
     .string()
-    .describe("Warcraft Logs report code whose local copy should be removed."),
+    .describe("Report code whose local copy should be removed (a WCL code or an imported log's local_ code)."),
 };
 
 const inputSchema = z.object(deleteLocalReportShape);
@@ -18,6 +25,9 @@ export async function deleteLocalReport(args: unknown) {
     const removedLog = await dropSchema(report_code);
     const removedRoutes = await dropRouteSchema(report_code);
     const removed = removedLog || removedRoutes;
+    // Keep the watcher from re-importing a log the user deleted; import_local_log un-ignores it.
+    const ingest = isLocalReportCode(report_code) ? await getIngest(report_code) : null;
+    if (ingest) await setIngest(null, { ...ingest, byte_offset: 0, status: "ignored", updated_at: Date.now() });
     return ok({
       status: removed ? "deleted" : "not_found",
       report_code,
