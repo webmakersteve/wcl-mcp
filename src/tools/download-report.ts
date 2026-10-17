@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { DuckDBAppender } from "@duckdb/node-api";
-import { openConnection, queryRows } from "../db/duck.js";
+import type { DuckDBAppender, DuckDBConnection } from "@duckdb/node-api";
+import { queryRows, replaceSchemaFromStaging, stageThenWrite } from "../db/duck.js";
 import {
   assertValidReportCode,
   expireReports,
@@ -128,20 +128,16 @@ export async function downloadReport(args: unknown) {
       return fail(`Report '${report_code}' not found (${hint}).`);
     }
 
-    // 2-6 run in one transaction on a dedicated connection: a failure part-way
-    // (rate limit, network) rolls back and leaves any previous copy intact,
-    // rather than a half-filled schema that would look "already downloaded".
+    // 2-6 build the report in a private scratch database, holding no lock on the shared file
+    // while paging the API. Only once it's complete is it swapped in under the write lock, in
+    // one transaction, so a failure part-way (rate limit, network) leaves any previous copy
+    // intact rather than a half-filled schema that would look "already downloaded".
     const schema = schemaName(report_code);
-    const conn = await openConnection();
     let totalEvents = 0;
     const downloadedAt = Date.now();
     const fights = report.fights ?? [];
-    try {
-      await conn.run("BEGIN TRANSACTION");
-
-      // 2. (Re)create the schema and seed tables. Dropping covers both force=true
-      // and a leftover incomplete download.
-      await conn.run(`DROP SCHEMA IF EXISTS ${quotedSchema(report_code)} CASCADE`);
+    const stage = async (conn: DuckDBConnection) => {
+      // 2. Create the schema and seed tables.
       await conn.run(`CREATE SCHEMA ${quotedSchema(report_code)}`);
       await createSeedTables(conn, report_code);
 
@@ -252,16 +248,9 @@ export async function downloadReport(args: unknown) {
           downloaded_at: bigint(downloadedAt),
         },
       );
-
-      await conn.run("COMMIT");
-    } catch (err) {
-      await conn.run("ROLLBACK").catch(() => {
-        /* transaction may already be aborted */
-      });
-      throw err;
-    } finally {
-      conn.closeSync();
-    }
+    };
+    // Replacing covers both force=true and a leftover incomplete download.
+    await stageThenWrite(stage, (conn) => replaceSchemaFromStaging(conn, schema));
 
     const counts = await tableCounts(report_code);
     return ok({

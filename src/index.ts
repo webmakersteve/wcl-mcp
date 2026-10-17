@@ -23,8 +23,8 @@ import { authStatus, authStatusShape, login, loginShape, logout, logoutShape } f
 import { runCli } from "./cli.js";
 import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
 import { expireReports } from "./db/schema.js";
-import { openConnection } from "./db/duck.js";
-import { migrateRouteTables } from "./mdt/route-tables.js";
+import { removeStaleStagingFiles, write } from "./db/duck.js";
+import { hasRouteTablesToMigrate, migrateRouteTables } from "./mdt/route-tables.js";
 
 const server = new McpServer({
   name: "wcl-mcp",
@@ -225,12 +225,10 @@ async function main(): Promise<void> {
 }
 
 async function housekeeping(): Promise<void> {
-  const conn = await openConnection();
-  try {
-    const migrated = await migrateRouteTables(conn);
+  removeStaleStagingFiles();
+  if (await hasRouteTablesToMigrate()) {
+    const migrated = await write((conn) => migrateRouteTables(conn));
     if (migrated.length > 0) console.error(`wcl-mcp: moved routes out of ${migrated.length} log schema(s)`);
-  } finally {
-    conn.closeSync();
   }
   const dropped = await expireReports();
   if (dropped.length > 0) console.error(`wcl-mcp: expired ${dropped.length} local schema(s)`);

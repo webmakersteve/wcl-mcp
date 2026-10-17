@@ -1,6 +1,6 @@
 import { quotedIdentifier, type DuckDBConnection } from "@duckdb/node-api";
 import type { TableSpec } from "../db/seeds.js";
-import { queryRows } from "../db/duck.js";
+import { queryRows, readRows } from "../db/duck.js";
 import {
   quotedRouteSchema,
   REPORT_SCHEMA_RE,
@@ -179,6 +179,15 @@ export async function insertRows(
 }
 
 
+const ROUTE_TABLES_IN_LOG_SCHEMAS_SQL =
+  "SELECT table_schema, table_name FROM information_schema.tables WHERE table_name LIKE 'route\\_%' ESCAPE '\\'";
+
+/** True when some log schema still holds route tables for migrateRouteTables to move. */
+export async function hasRouteTablesToMigrate(): Promise<boolean> {
+  const rows = await queryRows(ROUTE_TABLES_IN_LOG_SCHEMAS_SQL);
+  return rows.some((r) => REPORT_SCHEMA_RE.test(String(r.table_schema)) && String(r.table_name) in ROUTE_TABLES);
+}
+
 /**
  * Move route tables written into log schemas (before routes had their own schema) to the
  * report's route schema, so they survive the log schema being replaced or expired. Log
@@ -187,9 +196,7 @@ export async function insertRows(
  * dropped from every log schema. Returns the log schemas cleared.
  */
 export async function migrateRouteTables(conn: DuckDBConnection): Promise<string[]> {
-  const rows = await queryRows(
-    "SELECT table_schema, table_name FROM information_schema.tables WHERE table_name LIKE 'route\\_%' ESCAPE '\\'",
-  );
+  const rows = await readRows(conn, ROUTE_TABLES_IN_LOG_SCHEMAS_SQL);
   const bySchema = new Map<string, { code: string; version: number; tables: string[] }>();
   for (const r of rows) {
     const table = String(r.table_name);

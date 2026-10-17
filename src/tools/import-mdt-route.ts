@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { openConnection, queryRows } from "../db/duck.js";
+import { queryRows, write } from "../db/duck.js";
 import {
   assertValidReportCode,
   isDownloadComplete,
@@ -69,122 +69,121 @@ export async function importMdtRoute(args: unknown) {
     });
     const unknown = result.unknownEnemies.length;
 
-    const conn = await openConnection();
-    try {
-      await conn.run("BEGIN TRANSACTION");
-      await resetRouteTables(conn, report_code, fight.fight_id);
-      await insertRows(conn, report_code, "route_imports", [
-        [
-          fight.fight_id,
-          route.name,
-          route.uid,
-          route.dungeonIdx,
-          dungeon.name,
-          route.pulls.length,
-          result.pulls.reduce((n, p) => n + p.plannedForces, 0),
-          dungeon.totalForces,
-          wipes.length,
-          dungeon.commit,
-          mdt_string.trim(),
-          Date.now(),
-        ],
-      ]);
-      await insertRows(
-        conn,
-        report_code,
-        "route_pulls",
-        result.pulls.map((p) => [
-          fight.fight_id,
-          p.pullIndex,
-          p.plannedSlots,
-          p.plannedForces,
-          p.matchedSlots,
-          p.matchedForces,
-          p.addUnits,
-          p.engagements.join(","),
-          p.attempts.length,
-          p.outcome,
-          p.startTime,
-          p.endTime,
-          p.startTime !== null && p.endTime !== null ? p.endTime - p.startTime : null,
-          p.activeMs,
-          p.damage,
-          dps(p.damage, p.activeMs),
-          p.actualOrder,
-          p.chainedFrom,
-          p.overlapMs,
-        ]),
-      );
-      await insertRows(
-        conn,
-        report_code,
-        "route_pull_attempts",
-        result.pulls.flatMap((p) =>
-          p.attempts.map((a) => [
+    await write(async (conn) => {
+      try {
+        await conn.run("BEGIN TRANSACTION");
+        await resetRouteTables(conn, report_code, fight.fight_id);
+        await insertRows(conn, report_code, "route_imports", [
+          [
+            fight.fight_id,
+            route.name,
+            route.uid,
+            route.dungeonIdx,
+            dungeon.name,
+            route.pulls.length,
+            result.pulls.reduce((n, p) => n + p.plannedForces, 0),
+            dungeon.totalForces,
+            wipes.length,
+            dungeon.commit,
+            mdt_string.trim(),
+            Date.now(),
+          ],
+        ]);
+        await insertRows(
+          conn,
+          report_code,
+          "route_pulls",
+          result.pulls.map((p) => [
             fight.fight_id,
             p.pullIndex,
-            a.attempt,
-            a.outcome,
-            a.startTime,
-            a.endTime,
-            a.activeMs,
-            a.damage,
-            dps(a.damage, a.activeMs),
-            a.unitsFought,
-            a.unitsKilled,
-            a.chainedFrom,
-            a.overlapMs,
+            p.plannedSlots,
+            p.plannedForces,
+            p.matchedSlots,
+            p.matchedForces,
+            p.addUnits,
+            p.engagements.join(","),
+            p.attempts.length,
+            p.outcome,
+            p.startTime,
+            p.endTime,
+            p.startTime !== null && p.endTime !== null ? p.endTime - p.startTime : null,
+            p.activeMs,
+            p.damage,
+            dps(p.damage, p.activeMs),
+            p.actualOrder,
+            p.chainedFrom,
+            p.overlapMs,
           ]),
-        ),
-      );
-      await insertRows(
-        conn,
-        report_code,
-        "route_planned_units",
-        result.slots.map((s) => [
-          fight.fight_id,
-          s.pullIndex,
-          s.enemyIdx,
-          s.cloneIdx,
-          s.npcId,
-          s.name,
-          s.forces,
-          s.isBoss,
-          s.pack,
-          s.matched?.actorId ?? null,
-          s.matched?.instance ?? null,
-        ]),
-      );
-      await insertRows(
-        conn,
-        report_code,
-        "route_units",
-        result.units.map((u) => [
-          fight.fight_id,
-          u.actorId,
-          u.instance,
-          u.npcId,
-          u.name,
-          u.firstHit,
-          u.endTime,
-          u.died,
-          u.damageTaken,
-          u.engagement,
-          u.pullIndex,
-          u.assignment,
-          u.forces,
-          u.spans.length,
-        ]),
-      );
-      await conn.run("COMMIT");
-    } catch (err) {
-      await conn.run("ROLLBACK").catch(() => {
-        /* transaction may already be aborted */
-      });
-      throw err;
-    } finally {
-      conn.closeSync();
-    }
+        );
+        await insertRows(
+          conn,
+          report_code,
+          "route_pull_attempts",
+          result.pulls.flatMap((p) =>
+            p.attempts.map((a) => [
+              fight.fight_id,
+              p.pullIndex,
+              a.attempt,
+              a.outcome,
+              a.startTime,
+              a.endTime,
+              a.activeMs,
+              a.damage,
+              dps(a.damage, a.activeMs),
+              a.unitsFought,
+              a.unitsKilled,
+              a.chainedFrom,
+              a.overlapMs,
+            ]),
+          ),
+        );
+        await insertRows(
+          conn,
+          report_code,
+          "route_planned_units",
+          result.slots.map((s) => [
+            fight.fight_id,
+            s.pullIndex,
+            s.enemyIdx,
+            s.cloneIdx,
+            s.npcId,
+            s.name,
+            s.forces,
+            s.isBoss,
+            s.pack,
+            s.matched?.actorId ?? null,
+            s.matched?.instance ?? null,
+          ]),
+        );
+        await insertRows(
+          conn,
+          report_code,
+          "route_units",
+          result.units.map((u) => [
+            fight.fight_id,
+            u.actorId,
+            u.instance,
+            u.npcId,
+            u.name,
+            u.firstHit,
+            u.endTime,
+            u.died,
+            u.damageTaken,
+            u.engagement,
+            u.pullIndex,
+            u.assignment,
+            u.forces,
+            u.spans.length,
+          ]),
+        );
+        await conn.run("COMMIT");
+      } catch (err) {
+        await conn.run("ROLLBACK").catch(() => {
+          /* transaction may already be aborted */
+        });
+        throw err;
+      }
+    });
 
     // Faithfulness summary.
     const sec = (ms: number | null) => (ms === null ? null : Math.round(ms / 100) / 10);

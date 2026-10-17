@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { openConnection } from "../db/duck.js";
+import { read } from "../db/duck.js";
 import {
   assertValidReportCode,
   notDownloadedMessage,
@@ -58,8 +58,7 @@ export async function executeReadonlyQuery(args: unknown) {
     const schemas = [schemaName(report_code)];
     if (await routeSchemaExists(report_code)) schemas.push(routeSchemaName(report_code));
     // A per-call connection keeps search_path from leaking between concurrent calls.
-    const conn = await openConnection();
-    try {
+    return read(async (conn) => {
       // Scope unqualified table names to this report's schemas.
       await conn.run(`SET search_path = '${schemas.join(",")}'`);
       try {
@@ -88,8 +87,6 @@ export async function executeReadonlyQuery(args: unknown) {
             }
           : {}),
       });
-    } finally {
-      conn.closeSync();
-    }
+    });
   });
 }

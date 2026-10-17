@@ -1,6 +1,6 @@
-import { quotedIdentifier } from "@duckdb/node-api";
+import { quotedIdentifier, type DuckDBConnection } from "@duckdb/node-api";
 import { getConfig } from "../config.js";
-import { queryRows, run } from "./duck.js";
+import { queryRows, readRows, write } from "./duck.js";
 
 /**
  * Schema-evolution version. Bump when the seed table layout changes; old reports
@@ -65,15 +65,18 @@ export async function isDownloadComplete(
 }
 
 /** Drop the schema and all its tables. Returns false if it didn't exist. */
-export async function dropSchema(
-  code: string,
-  version = SCHEMA_VERSION,
-): Promise<boolean> {
-  const existed = await schemaExists(code, version);
-  if (existed) {
-    await run(`DROP SCHEMA ${quotedSchema(code, version)} CASCADE`);
-  }
-  return existed;
+export function dropSchema(code: string, version = SCHEMA_VERSION): Promise<boolean> {
+  return write((conn) => dropSchemaIfExists(conn, schemaName(code, version)));
+}
+
+async function dropSchemaIfExists(conn: DuckDBConnection, name: string): Promise<boolean> {
+  const rows = await readRows(
+    conn,
+    "SELECT 1 FROM information_schema.schemata WHERE schema_name = $name LIMIT 1",
+    { name },
+  );
+  if (rows.length > 0) await conn.run(`DROP SCHEMA ${quotedIdentifier(name)} CASCADE`);
+  return rows.length > 0;
 }
 
 /** Matches a per-report log schema name, capturing the report code and version. */
@@ -101,10 +104,8 @@ export async function routeSchemaExists(code: string): Promise<boolean> {
 }
 
 /** Drop the report's route schema (imported MDT routes). Returns false if it didn't exist. */
-export async function dropRouteSchema(code: string): Promise<boolean> {
-  const existed = await routeSchemaExists(code);
-  if (existed) await run(`DROP SCHEMA ${quotedRouteSchema(code)} CASCADE`);
-  return existed;
+export function dropRouteSchema(code: string): Promise<boolean> {
+  return write((conn) => dropSchemaIfExists(conn, routeSchemaName(code)));
 }
 
 /** Versions (other than the current one) this report is still stored under locally. */
@@ -152,27 +153,37 @@ const EXPIRING_SCHEMAS = [
  * Drop every log schema downloaded, and every route schema last imported into, longer ago
  * than the TTL (any version). Schemas missing that timestamp are incomplete or unreadable
  * leftovers and are dropped too. Shared schemas (gamedata, mdt) never match the per-report
- * naming patterns. Returns dropped names.
+ * naming patterns. Only takes the write lock when something has expired. Returns dropped names.
  */
 export async function expireReports(now = Date.now()): Promise<string[]> {
   const { reportTtlDays } = getConfig();
   if (reportTtlDays <= 0) return [];
   const cutoff = now - reportTtlDays * 86_400_000;
 
-  const schemas = await queryRows("SELECT schema_name FROM information_schema.schemata");
-  const dropped: string[] = [];
+  if ((await expiredSchemas(queryRows, cutoff)).length === 0) return [];
+  // Re-check under the write lock: another process may have re-downloaded meanwhile.
+  return write(async (conn) => {
+    const expired = await expiredSchemas((sql) => readRows(conn, sql), cutoff);
+    for (const name of expired) await conn.run(`DROP SCHEMA ${quotedIdentifier(name)} CASCADE`);
+    return expired;
+  });
+}
+
+async function expiredSchemas(
+  query: (sql: string) => Promise<Record<string, unknown>[]>,
+  cutoff: number,
+): Promise<string[]> {
+  const schemas = await query("SELECT schema_name FROM information_schema.schemata");
+  const expired: string[] = [];
   for (const { schema_name } of schemas) {
     const name = String(schema_name);
     const kind = EXPIRING_SCHEMAS.find((k) => k.re.test(name));
     if (!kind) continue;
-    const ident = quotedIdentifier(name);
-    const rows = await queryRows(kind.writtenAt.replace("%s", ident)).catch(() => []);
+    const rows = await query(kind.writtenAt.replace("%s", quotedIdentifier(name))).catch(() => []);
     const writtenAt = rows[0]?.t;
-    if (writtenAt !== null && writtenAt !== undefined && Number(writtenAt) >= cutoff) {
-      continue;
+    if (writtenAt === null || writtenAt === undefined || Number(writtenAt) < cutoff) {
+      expired.push(name);
     }
-    await run(`DROP SCHEMA ${ident} CASCADE`);
-    dropped.push(name);
   }
-  return dropped;
+  return expired;
 }

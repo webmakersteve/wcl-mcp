@@ -133,6 +133,7 @@ config, e.g. `env` in `.mcp.json`. This repo's `.mcp.json` sets `WCL_DB_PATH` fo
 | `WCL_DB_PATH` | per-user data dir (below) | DuckDB file location |
 | `WCL_AUTH_PATH` | `~/.config/wcl-mcp/auth.json` | Where login tokens are stored |
 | `WCL_REPORT_TTL_DAYS` | `7` | Days a downloaded report is kept before it's deleted; `0` keeps reports forever |
+| `WCL_DB_LOCK_TIMEOUT_SECONDS` | `300` | How long to wait for another wcl-mcp process (e.g. another Claude Code session) to release the DuckDB file before a tool call fails |
 
 The DuckDB file defaults to a per-user data directory, so downloaded reports and game data persist
 across projects and sessions whatever directory the server is launched from:

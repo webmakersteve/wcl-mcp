@@ -1,5 +1,5 @@
 import type { DuckDBAppender, DuckDBConnection } from "@duckdb/node-api";
-import { openConnection, queryRows } from "../db/duck.js";
+import { queryRows, replaceSchemaFromStaging, stageThenWrite } from "../db/duck.js";
 import { parseCsv } from "./csv.js";
 import {
   createGameTableSql,
@@ -56,55 +56,47 @@ async function runSync(force: boolean): Promise<SyncResult> {
     return { status: "up_to_date", build, previous_build: previous };
   }
 
-  // One transaction on a dedicated connection: a failed download leaves the
-  // previous build's data in place. Tables are downloaded and loaded one at a
-  // time so only one CSV is held in memory.
-  const conn = await openConnection();
+  // Build the new schema in a scratch database (no lock held during the ~25 s of downloads),
+  // then swap it in under the write lock; a failed download leaves the previous build in
+  // place. Tables are downloaded and loaded one at a time so only one CSV is held in memory.
   const counts: Record<string, number> = {};
-  try {
-    await conn.run("BEGIN TRANSACTION");
-    await conn.run(`DROP SCHEMA IF EXISTS ${q(GAMEDATA_SCHEMA)} CASCADE`);
-    await conn.run(`CREATE SCHEMA ${q(GAMEDATA_SCHEMA)}`);
+  await stageThenWrite(
+    async (conn) => {
+      await conn.run(`CREATE SCHEMA ${q(GAMEDATA_SCHEMA)}`);
 
-    for (const [table, spec] of Object.entries(GAME_TABLES)) {
-      await conn.run(createGameTableSql(table, spec));
-      const csv = await downloadTableCsv(spec.source, build);
-      counts[table] = await loadCsv(conn, table, spec, csv);
-    }
-
-    // Merge name + text into the single documented `spell` table.
-    await conn.run(
-      `CREATE TABLE ${q(GAMEDATA_SCHEMA)}.spell AS
-       SELECT n.spell_id, n.name, t.subtext, t.description, t.aura_description
-       FROM ${q(GAMEDATA_SCHEMA)}.spell_name n
-       LEFT JOIN ${q(GAMEDATA_SCHEMA)}.spell_text t USING (spell_id)
-       ORDER BY n.spell_id`,
-    );
-    for (const [table, spec] of Object.entries(GAME_TABLES)) {
-      if (spec.staging) {
-        await conn.run(`DROP TABLE ${q(GAMEDATA_SCHEMA)}.${q(table)}`);
-        delete counts[table];
+      for (const [table, spec] of Object.entries(GAME_TABLES)) {
+        await conn.run(createGameTableSql(table, spec));
+        const csv = await downloadTableCsv(spec.source, build);
+        counts[table] = await loadCsv(conn, table, spec, csv);
       }
-    }
-    const spellCount = await conn.runAndReadAll(
-      `SELECT count(*)::INTEGER AS n FROM ${q(GAMEDATA_SCHEMA)}.spell`,
-    );
-    counts.spell = Number(spellCount.getRowObjects()[0]?.n ?? 0);
 
-    await conn.run(
-      `CREATE TABLE ${q(GAMEDATA_SCHEMA)}.${q(GAMEDATA_META_TABLE)} AS
-       SELECT $build::VARCHAR AS build, now()::VARCHAR AS synced_at, 'wago.tools'::VARCHAR AS source`,
-      { build },
-    );
-    await conn.run("COMMIT");
-  } catch (err) {
-    await conn.run("ROLLBACK").catch(() => {
-      /* transaction may already be aborted */
-    });
-    throw err;
-  } finally {
-    conn.closeSync();
-  }
+      // Merge name + text into the single documented `spell` table.
+      await conn.run(
+        `CREATE TABLE ${q(GAMEDATA_SCHEMA)}.spell AS
+         SELECT n.spell_id, n.name, t.subtext, t.description, t.aura_description
+         FROM ${q(GAMEDATA_SCHEMA)}.spell_name n
+         LEFT JOIN ${q(GAMEDATA_SCHEMA)}.spell_text t USING (spell_id)
+         ORDER BY n.spell_id`,
+      );
+      for (const [table, spec] of Object.entries(GAME_TABLES)) {
+        if (spec.staging) {
+          await conn.run(`DROP TABLE ${q(GAMEDATA_SCHEMA)}.${q(table)}`);
+          delete counts[table];
+        }
+      }
+      const spellCount = await conn.runAndReadAll(
+        `SELECT count(*)::INTEGER AS n FROM ${q(GAMEDATA_SCHEMA)}.spell`,
+      );
+      counts.spell = Number(spellCount.getRowObjects()[0]?.n ?? 0);
+
+      await conn.run(
+        `CREATE TABLE ${q(GAMEDATA_SCHEMA)}.${q(GAMEDATA_META_TABLE)} AS
+         SELECT $build::VARCHAR AS build, now()::VARCHAR AS synced_at, 'wago.tools'::VARCHAR AS source`,
+        { build },
+      );
+    },
+    (conn) => replaceSchemaFromStaging(conn, GAMEDATA_SCHEMA),
+  );
 
   return {
     status: "synced",

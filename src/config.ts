@@ -16,6 +16,9 @@ const DEFAULT_CLIENT_ID = "01a145bb-9826-70ca-b69c-d6d99f5f4974";
 /** Downloaded reports are kept this long unless WCL_REPORT_TTL_DAYS overrides it. */
 const DEFAULT_REPORT_TTL_DAYS = 7;
 
+/** How long to wait for another process to release the DuckDB file lock. */
+const DEFAULT_DB_LOCK_TIMEOUT_SECONDS = 300;
+
 /** Expand a leading `~` so env overrides like `~/wcl.duckdb` work. */
 function expandHome(path: string): string {
   return path === "~" || path.startsWith("~/") || path.startsWith("~\\")
@@ -66,6 +69,8 @@ export interface Config {
   authPath: string;
   /** Downloaded reports are dropped this many days after download; 0 keeps them forever. */
   reportTtlDays: number;
+  /** How long to wait for another process to release the database lock, in milliseconds. */
+  lockTimeoutMs: number;
 }
 
 let cached: Config | undefined;
@@ -109,6 +114,13 @@ export function getConfig(): Config {
     throw new Error(`WCL_REPORT_TTL_DAYS must be a non-negative number, got: ${ttlRaw}`);
   }
 
-  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath, reportTtlDays };
+  const lockRaw = process.env.WCL_DB_LOCK_TIMEOUT_SECONDS?.trim();
+  const lockTimeoutSeconds = lockRaw ? Number(lockRaw) : DEFAULT_DB_LOCK_TIMEOUT_SECONDS;
+  if (!Number.isFinite(lockTimeoutSeconds) || lockTimeoutSeconds < 0) {
+    throw new Error(`WCL_DB_LOCK_TIMEOUT_SECONDS must be a non-negative number, got: ${lockRaw}`);
+  }
+  const lockTimeoutMs = lockTimeoutSeconds * 1000;
+
+  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath, reportTtlDays, lockTimeoutMs };
   return cached;
 }

@@ -1,5 +1,5 @@
 import { quotedIdentifier } from "@duckdb/node-api";
-import { openConnection, queryRows } from "../db/duck.js";
+import { queryRows, write } from "../db/duck.js";
 import type { TableSpec } from "../db/seeds.js";
 import { parseAssignedTable, type LuaTable, type LuaValue } from "./lua.js";
 
@@ -161,89 +161,88 @@ async function fetchDungeons(commit: string): Promise<ParsedDungeon[]> {
 const num = (v: LuaValue | undefined): number | null => (typeof v === "number" ? v : null);
 const sorted = (t: LuaTable) => Object.entries(t).sort(([a], [b]) => Number(a) - Number(b));
 
-async function loadDungeons(commit: string, dungeons: ParsedDungeon[]): Promise<void> {
-  const conn = await openConnection();
-  try {
-    await conn.run("BEGIN TRANSACTION");
-    await conn.run(`DROP SCHEMA IF EXISTS ${q(MDT_SCHEMA)} CASCADE`);
-    await conn.run(`CREATE SCHEMA ${q(MDT_SCHEMA)}`);
-    for (const [table, spec] of Object.entries(MDT_TABLES)) {
-      const cols = Object.entries(spec.columns).map(([n, c]) => `${q(n)} ${c.type}`).join(", ");
-      await conn.run(`CREATE TABLE ${q(MDT_SCHEMA)}.${q(table)} (${cols})`);
-    }
-
-    const dungeonsA = await conn.createAppender("dungeons", MDT_SCHEMA);
-    const enemiesA = await conn.createAppender("enemies", MDT_SCHEMA);
-    const spawnsA = await conn.createAppender("spawns", MDT_SCHEMA);
-    const int = (a: typeof spawnsA, v: number | null) => (v === null ? a.appendNull() : a.appendInteger(v));
+function loadDungeons(commit: string, dungeons: ParsedDungeon[]): Promise<void> {
+  return write(async (conn) => {
     try {
-      for (const d of dungeons) {
-        dungeonsA.appendInteger(d.dungeonIdx);
-        dungeonsA.appendVarchar(d.name);
-        int(dungeonsA, d.mapId);
-        dungeonsA.appendInteger(d.totalForces);
-        dungeonsA.appendVarchar(d.file);
-        dungeonsA.endRow();
+      await conn.run("BEGIN TRANSACTION");
+      await conn.run(`DROP SCHEMA IF EXISTS ${q(MDT_SCHEMA)} CASCADE`);
+      await conn.run(`CREATE SCHEMA ${q(MDT_SCHEMA)}`);
+      for (const [table, spec] of Object.entries(MDT_TABLES)) {
+        const cols = Object.entries(spec.columns).map(([n, c]) => `${q(n)} ${c.type}`).join(", ");
+        await conn.run(`CREATE TABLE ${q(MDT_SCHEMA)}.${q(table)} (${cols})`);
+      }
 
-        for (const [k, v] of sorted(d.enemies)) {
-          if (!v || typeof v !== "object") continue;
-          const e = v as LuaTable;
-          enemiesA.appendInteger(d.dungeonIdx);
-          enemiesA.appendInteger(Number(k));
-          int(enemiesA, num(e.id));
-          enemiesA.appendVarchar(String(e.name ?? ""));
-          enemiesA.appendInteger(num(e.count) ?? 0);
-          const health = num(e.health);
-          if (health === null) enemiesA.appendNull();
-          else enemiesA.appendBigInt(BigInt(Math.trunc(health)));
-          enemiesA.appendBoolean(e.isBoss === true);
-          int(enemiesA, num(e.encounterID));
-          if (typeof e.creatureType === "string") enemiesA.appendVarchar(e.creatureType);
-          else enemiesA.appendNull();
-          enemiesA.endRow();
+      const dungeonsA = await conn.createAppender("dungeons", MDT_SCHEMA);
+      const enemiesA = await conn.createAppender("enemies", MDT_SCHEMA);
+      const spawnsA = await conn.createAppender("spawns", MDT_SCHEMA);
+      const int = (a: typeof spawnsA, v: number | null) => (v === null ? a.appendNull() : a.appendInteger(v));
+      try {
+        for (const d of dungeons) {
+          dungeonsA.appendInteger(d.dungeonIdx);
+          dungeonsA.appendVarchar(d.name);
+          int(dungeonsA, d.mapId);
+          dungeonsA.appendInteger(d.totalForces);
+          dungeonsA.appendVarchar(d.file);
+          dungeonsA.endRow();
 
-          const clones = e.clones && typeof e.clones === "object" ? (e.clones as LuaTable) : {};
-          for (const [ci, cv] of sorted(clones)) {
-            if (!cv || typeof cv !== "object") continue;
-            const c = cv as LuaTable;
-            spawnsA.appendInteger(d.dungeonIdx);
-            spawnsA.appendInteger(Number(k));
-            spawnsA.appendInteger(Number(ci));
-            int(spawnsA, num(c.g));
-            int(spawnsA, num(c.sublevel));
-            const x = num(c.x);
-            const y = num(c.y);
-            if (x === null) spawnsA.appendNull();
-            else spawnsA.appendDouble(x);
-            if (y === null) spawnsA.appendNull();
-            else spawnsA.appendDouble(y);
-            spawnsA.endRow();
+          for (const [k, v] of sorted(d.enemies)) {
+            if (!v || typeof v !== "object") continue;
+            const e = v as LuaTable;
+            enemiesA.appendInteger(d.dungeonIdx);
+            enemiesA.appendInteger(Number(k));
+            int(enemiesA, num(e.id));
+            enemiesA.appendVarchar(String(e.name ?? ""));
+            enemiesA.appendInteger(num(e.count) ?? 0);
+            const health = num(e.health);
+            if (health === null) enemiesA.appendNull();
+            else enemiesA.appendBigInt(BigInt(Math.trunc(health)));
+            enemiesA.appendBoolean(e.isBoss === true);
+            int(enemiesA, num(e.encounterID));
+            if (typeof e.creatureType === "string") enemiesA.appendVarchar(e.creatureType);
+            else enemiesA.appendNull();
+            enemiesA.endRow();
+
+            const clones = e.clones && typeof e.clones === "object" ? (e.clones as LuaTable) : {};
+            for (const [ci, cv] of sorted(clones)) {
+              if (!cv || typeof cv !== "object") continue;
+              const c = cv as LuaTable;
+              spawnsA.appendInteger(d.dungeonIdx);
+              spawnsA.appendInteger(Number(k));
+              spawnsA.appendInteger(Number(ci));
+              int(spawnsA, num(c.g));
+              int(spawnsA, num(c.sublevel));
+              const x = num(c.x);
+              const y = num(c.y);
+              if (x === null) spawnsA.appendNull();
+              else spawnsA.appendDouble(x);
+              if (y === null) spawnsA.appendNull();
+              else spawnsA.appendDouble(y);
+              spawnsA.endRow();
+            }
           }
         }
+        dungeonsA.flushSync();
+        enemiesA.flushSync();
+        spawnsA.flushSync();
+      } finally {
+        dungeonsA.closeSync();
+        enemiesA.closeSync();
+        spawnsA.closeSync();
       }
-      dungeonsA.flushSync();
-      enemiesA.flushSync();
-      spawnsA.flushSync();
-    } finally {
-      dungeonsA.closeSync();
-      enemiesA.closeSync();
-      spawnsA.closeSync();
-    }
 
-    await conn.run(
-      `CREATE TABLE ${q(MDT_SCHEMA)}.${q(META_TABLE)} AS
-       SELECT $commit::VARCHAR AS commit, $now::BIGINT AS synced_at_ms`,
-      { commit, now: Date.now() },
-    );
-    await conn.run("COMMIT");
-  } catch (err) {
-    await conn.run("ROLLBACK").catch(() => {
-      /* transaction may already be aborted */
-    });
-    throw err;
-  } finally {
-    conn.closeSync();
-  }
+      await conn.run(
+        `CREATE TABLE ${q(MDT_SCHEMA)}.${q(META_TABLE)} AS
+         SELECT $commit::VARCHAR AS commit, $now::BIGINT AS synced_at_ms`,
+        { commit, now: Date.now() },
+      );
+      await conn.run("COMMIT");
+    } catch (err) {
+      await conn.run("ROLLBACK").catch(() => {
+        /* transaction may already be aborted */
+      });
+      throw err;
+    }
+  });
 }
 
 let inFlight: Promise<string> | undefined;
@@ -266,9 +265,11 @@ export function ensureMdtData(force = false): Promise<string> {
         throw err;
       }
       if (current?.commit === commit) {
-        await queryRows(`UPDATE ${q(MDT_SCHEMA)}.${q(META_TABLE)} SET synced_at_ms = $now`, {
-          now: Date.now(),
-        });
+        await write((conn) =>
+          conn.run(`UPDATE ${q(MDT_SCHEMA)}.${q(META_TABLE)} SET synced_at_ms = $now`, {
+            now: BigInt(Date.now()),
+          }),
+        );
         return commit;
       }
       await loadDungeons(commit, await fetchDungeons(commit));
