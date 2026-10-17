@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { queryRows } from "../db/duck.js";
 import { quotedSchema, schemaExists, schemaName } from "../db/schema.js";
+import { forgetDirs, savedDirs, syncDirs } from "../local/dirs.js";
 import { importLogFile } from "../local/importer.js";
 import { listIngests } from "../local/store.js";
-import { resolveLogDir, unwatchDir, watchDir, watchStatus } from "../local/watcher.js";
 import { guard, ok } from "./result.js";
 
 export const importLocalLogShape = {
@@ -21,53 +21,67 @@ export async function importLocalLog(args: unknown) {
     if (result.status === "waiting") {
       return ok({ ...result, hint: "The file doesn't have enough lines to identify it yet." });
     }
+    if (result.status === "not_a_combat_log") {
+      return ok({ ...result, hint: "The file doesn't start with a COMBAT_LOG_VERSION line, so it isn't a WoW combat log." });
+    }
     return ok({
       ...result,
       schema: result.report_code ? schemaName(result.report_code) : null,
       hint:
         "Use report_code with get_report_details / execute_readonly_query, like a WCL report code. " +
-        "For a log that's still being written, use watch_logs instead.",
+        "For a log that's still being written, use sync_local_logs instead.",
     });
   });
 }
 
-export const watchLogsShape = {
+export const syncLocalLogsShape = {
   dir: z
     .string()
     .optional()
-    .describe("WoW Logs directory (World of Warcraft/_retail_/Logs). Defaults to the usual install location."),
+    .describe(
+      "WoW Logs directory (World of Warcraft/_retail_/Logs); saved for later syncs. Omit to sync " +
+        "the saved directories (or, if none, the usual install location).",
+    ),
 };
 
-export async function watchLogs(args: unknown) {
+export async function syncLocalLogs(args: unknown) {
   return guard(async () => {
-    const { dir } = z.object(watchLogsShape).parse(args);
-    const resolved = await resolveLogDir(dir);
-    const res = await watchDir(resolved);
+    const { dir } = z.object(syncLocalLogsShape).parse(args);
+    const dirs = await syncDirs(dir);
     return ok({
-      ...res,
-      status: "watching",
+      dirs: dirs.map((d) => {
+        // Files with nothing new are summarized, not listed.
+        const unchanged = (f: (typeof d.files)[number]) =>
+          f.status === "up_to_date" || (f.status === "imported" && f.fights_added === 0 && !f.in_progress);
+        return {
+          dir: d.dir,
+          up_to_date: d.files.filter(unchanged).length,
+          files: d.files.filter((f) => !unchanged(f)),
+          ...(d.errors.length ? { errors: d.errors } : {}),
+        };
+      }),
       hint:
-        "Saved: this directory is watched whenever the server runs, catching up on anything new. " +
-        "Existing logs import in the background; check progress and report codes with watch_status.",
+        "Each finished fight is now queryable by its log's report_code. A fight still in progress " +
+        "in the newest log is picked up by the next sync.",
     });
   });
 }
 
-export const unwatchLogsShape = {
-  dir: z.string().optional().describe("Directory to stop watching; omit to stop all."),
+export const forgetLogDirShape = {
+  dir: z.string().optional().describe("Saved directory to forget; omit to forget all."),
 };
 
-export async function unwatchLogs(args: unknown) {
+export async function forgetLogDir(args: unknown) {
   return guard(async () => {
-    const { dir } = z.object(unwatchLogsShape).parse(args);
-    const removed = await unwatchDir(dir);
-    return ok({ stopped: removed, note: "Imported reports are kept; delete them with delete_local_report." });
+    const { dir } = z.object(forgetLogDirShape).parse(args);
+    const removed = await forgetDirs(dir);
+    return ok({ forgotten: removed, note: "Imported reports are kept; delete them with delete_local_report." });
   });
 }
 
-export const watchStatusShape = {};
+export const listLocalLogsShape = {};
 
-export async function getWatchStatus() {
+export async function listLocalLogs() {
   return guard(async () => {
     const files = [];
     for (const f of await listIngests()) {
@@ -87,6 +101,6 @@ export async function getWatchStatus() {
         fights,
       });
     }
-    return ok({ ...watchStatus(), imported_logs: files });
+    return ok({ saved_dirs: await savedDirs(), imported_logs: files });
   });
 }

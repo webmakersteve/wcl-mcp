@@ -30,15 +30,20 @@ export interface RawLine {
   fields: Field[];
 }
 
-/** Split a line into time, event and fields. Returns null for blank or malformed lines. */
+/**
+ * Split a line into time, event and fields. Returns null for blank or malformed lines (a torn
+ * write, or a file that isn't a combat log), so one bad line can't block an import.
+ */
 export function parseLine(line: string): RawLine | null {
   const sep = line.indexOf("  ");
   if (sep < 0) return null;
   const comma = line.indexOf(",", sep + 2);
   const event = comma < 0 ? line.slice(sep + 2) : line.slice(sep + 2, comma);
   if (!event) return null;
+  const time = TIMESTAMP_RE.test(line.slice(0, sep)) ? parseTimestamp(line.slice(0, sep)) : NaN;
+  if (Number.isNaN(time)) return null;
   return {
-    time: parseTimestamp(line.slice(0, sep)),
+    time,
     event,
     fields: comma < 0 ? [] : parseFields(line, comma + 1),
   };

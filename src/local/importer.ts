@@ -1,7 +1,7 @@
 /**
  * Import a WoWCombatLog file into a local report schema, incrementally: each finished fight
- * is committed with the byte offset to resume from, so re-running (or the watcher catching
- * up after a restart) only parses what's new.
+ * is committed with the byte offset to resume from, so re-running it (as sync_local_logs does)
+ * only parses what's new.
  */
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
@@ -23,14 +23,17 @@ export interface ImportOptions {
   final: boolean;
   /** Drop any previous import of this file and start over (also un-ignores it). */
   force?: boolean;
-  /** Skip files whose import was deleted by the user (the watcher sets this). */
+  /** Skip files whose import was deleted by the user (sync_local_logs sets this). */
   respectIgnored?: boolean;
 }
 
 export interface ImportResult {
   report_code: string | null;
-  /** superseded: another wcl-mcp process committed this file's progress first. */
-  status: "imported" | "up_to_date" | "waiting" | "ignored" | "superseded";
+  /**
+   * superseded: another wcl-mcp process committed this file's progress first.
+   * not_a_combat_log: the file doesn't start with a COMBAT_LOG_VERSION header; nothing imported.
+   */
+  status: "imported" | "up_to_date" | "waiting" | "ignored" | "superseded" | "not_a_combat_log";
   fights_added: number;
   events_added: number;
   /** A fight is still open at the end of a live file (it'll be committed when it ends). */
@@ -39,11 +42,13 @@ export interface ImportResult {
 
 /**
  * Report code for a log file: `local_` + a hash of its first lines. Stable as the file grows
- * and if it's moved or renamed. Null until the file has those lines.
+ * and if it's moved or renamed. Null until the file has those lines; "not_a_combat_log" when
+ * it doesn't start with the COMBAT_LOG_VERSION header every combat log begins with.
  */
-export async function reportCodeForFile(path: string): Promise<string | null> {
+export async function reportCodeForFile(path: string): Promise<string | null | "not_a_combat_log"> {
   const lines: string[] = [];
   for await (const { line } of readLines(path, 0)) {
+    if (lines.length === 0 && parseLine(line)?.event !== "COMBAT_LOG_VERSION") return "not_a_combat_log";
     lines.push(line);
     if (lines.length === IDENTITY_LINES) break;
   }
@@ -52,7 +57,7 @@ export async function reportCodeForFile(path: string): Promise<string | null> {
 }
 
 /**
- * One import at a time per report within this process, so the watcher and the import tool
+ * One import at a time per report within this process, so a sync and the import tool
  * don't race each other; across processes, commits are compare-and-set on the stored offset.
  */
 const locks = new Map<string, Promise<unknown>>();
@@ -60,7 +65,10 @@ const locks = new Map<string, Promise<unknown>>();
 export async function importLogFile(pathInput: string, options: ImportOptions): Promise<ImportResult> {
   const path = resolve(pathInput);
   const code = await reportCodeForFile(path);
-  if (!code) return { report_code: null, status: "waiting", fights_added: 0, events_added: 0, in_progress: false };
+  if (!code || code === "not_a_combat_log") {
+    const status = code === "not_a_combat_log" ? "not_a_combat_log" : "waiting";
+    return { report_code: null, status, fights_added: 0, events_added: 0, in_progress: false };
+  }
   const prev = locks.get(code) ?? Promise.resolve();
   const run = prev.catch(() => undefined).then(() => importLocked(path, code, options));
   locks.set(code, run);

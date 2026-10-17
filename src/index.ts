@@ -21,16 +21,15 @@ import { getPullInsights, getPullInsightsShape } from "./tools/get-pull-insights
 import { importMdtRoute, importMdtRouteShape } from "./tools/import-mdt-route.js";
 import { authStatus, authStatusShape, login, loginShape, logout, logoutShape } from "./tools/auth.js";
 import {
-  getWatchStatus,
+  forgetLogDir,
+  forgetLogDirShape,
   importLocalLog,
   importLocalLogShape,
-  unwatchLogs,
-  unwatchLogsShape,
-  watchLogs,
-  watchLogsShape,
-  watchStatusShape,
+  listLocalLogs,
+  listLocalLogsShape,
+  syncLocalLogs,
+  syncLocalLogsShape,
 } from "./tools/local-logs.js";
-import { resumeWatches } from "./local/watcher.js";
 import { runCli } from "./cli.js";
 import { loadStoredAuth, onAuthChange } from "./wcl/auth.js";
 import { expireReports } from "./db/schema.js";
@@ -161,7 +160,7 @@ server.registerTool(
     title: "Delete local report",
     description:
       "Remove a report's local DuckDB schema and all its tables. Does not affect Warcraft Logs " +
-      "or the log file. A deleted local log isn't re-imported by watch_logs; import_local_log " +
+      "or the log file. A deleted local log isn't re-imported by sync_local_logs; import_local_log " +
       "brings it back.",
     inputSchema: deleteLocalReportShape,
   },
@@ -177,46 +176,47 @@ server.registerTool(
       "schema as WCL downloads, so it can be queried and compared with WCL reports. Fights are " +
       "split the way WCL does (M+ keys, boss pulls, trash). Returns a local_ report code usable " +
       "anywhere a report code is. Re-running only parses what's new. Works offline, including " +
-      "for logs never uploaded to WCL. For logs still being written, use watch_logs.",
+      "for logs never uploaded to WCL. For the WoW Logs directory, use sync_local_logs.",
     inputSchema: importLocalLogShape,
   },
   (args) => importLocalLog(args),
 );
 
 server.registerTool(
-  "watch_logs",
+  "sync_local_logs",
   {
-    title: "Watch combat log directory",
+    title: "Sync local combat logs",
     description:
-      "Watch the WoW Logs directory and import combat logs automatically as they're written: " +
-      "each fight is available to query as soon as it ends. The directory is remembered: it's " +
-      "watched whenever the server runs, catching up on anything logged while it wasn't. " +
-      "Defaults to the usual install location.",
-    inputSchema: watchLogsShape,
+      "Import whatever the game has written to the WoW Logs directory since the last sync: every " +
+      "WoWCombatLog*.txt file there, including the one being written right now (fights that " +
+      "have ended become queryable; one still in progress waits for the next sync). Only parses " +
+      "what's new. Call it when the user asks for their latest local data. The directory is " +
+      "saved for later syncs; defaults to the saved directories, else the usual install location.",
+    inputSchema: syncLocalLogsShape,
   },
-  (args) => watchLogs(args),
+  (args) => syncLocalLogs(args),
 );
 
 server.registerTool(
-  "unwatch_logs",
+  "forget_log_dir",
   {
-    title: "Stop watching combat logs",
-    description: "Stop watching a combat log directory (or all of them). Imported reports are kept.",
-    inputSchema: unwatchLogsShape,
+    title: "Forget combat log directory",
+    description: "Remove a saved combat log directory (or all of them) from sync_local_logs. Imported reports are kept.",
+    inputSchema: forgetLogDirShape,
   },
-  (args) => unwatchLogs(args),
+  (args) => forgetLogDir(args),
 );
 
 server.registerTool(
-  "watch_status",
+  "list_local_logs",
   {
-    title: "Combat log watch status",
+    title: "List local combat logs",
     description:
-      "Watched directories, import progress and errors, and every imported local log with its " +
-      "report code and fights.",
-    inputSchema: watchStatusShape,
+      "Saved combat log directories, and every imported local log with its report code, import " +
+      "status and fights.",
+    inputSchema: listLocalLogsShape,
   },
-  () => getWatchStatus(),
+  () => listLocalLogs(),
 );
 
 server.registerTool(
@@ -289,8 +289,6 @@ async function main(): Promise<void> {
   // Move routes out of log schemas (pre-route-schema layout) before the TTL can drop those,
   // then drop reports past their TTL. A failure here must not take the server down.
   housekeeping().catch((err) => console.error("wcl-mcp: local report housekeeping failed:", err));
-  // Resume saved combat log watches; failures are reported by watch_status, not fatal.
-  resumeWatches().catch((err) => console.error("wcl-mcp: resuming log watches failed:", err));
 }
 
 async function housekeeping(): Promise<void> {

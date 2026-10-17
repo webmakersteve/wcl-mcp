@@ -2,7 +2,7 @@
  * DuckDB persistence for imported combat logs: per-report seed tables (same layout as WCL
  * downloads) plus shared ingest state in the `local_logs` schema.
  *
- * Several wcl-mcp processes (one per session) can watch the same directory. Each commit runs
+ * Several wcl-mcp processes (one per session) can sync the same log at once. Each commit runs
  * under the write lock and only applies if the stored offset is still the one the import
  * started from, so two processes never both append the same fights.
  */
@@ -42,8 +42,8 @@ export function ensureLocalTables(): Promise<void> {
     await write(async (conn) => {
       await conn.run(`CREATE SCHEMA IF NOT EXISTS ${LOCAL_SCHEMA}`);
       await conn.run(
-        `CREATE TABLE IF NOT EXISTS ${LOCAL_SCHEMA}.watched_dirs (
-           path VARCHAR PRIMARY KEY, added_at BIGINT NOT NULL, enabled BOOLEAN NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS ${LOCAL_SCHEMA}.log_dirs (
+           path VARCHAR PRIMARY KEY, added_at BIGINT NOT NULL)`,
       );
       await conn.run(
         `CREATE TABLE IF NOT EXISTS ${LOCAL_SCHEMA}.ingest_files (

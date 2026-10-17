@@ -213,23 +213,23 @@ write our own version-aware parser.
   from crit/glancing flags, segmenter (ENCOUNTER_*, CHALLENGE_MODE_*, trash heuristics).
 - Requires Advanced Combat Logging; detect when it's off and record that in `report_details`.
 
-## Directory watcher (live auto-import)
-- Tools: `watch_logs(dir?)` / `unwatch_logs(dir?)` / `watch_status`. No env var: watched
-  directories persist in DuckDB (`local_logs.watched_dirs(path, added_at, enabled)`), not just in
-  memory, so on server boot every enabled directory resumes watching and catches up with no
-  re-configuration. `watch_logs` with no `dir` probes the per-OS default install paths
+## Log directory sync (on request)
+- Originally a background watcher (`fs.watch` + polling, resumed on server start). Dropped: with
+  one server per session every open session parsed the same lines, for only slightly faster
+  ingestion. Instead the user asks for a sync.
+- Tools: `sync_local_logs(dir?)` / `forget_log_dir(dir?)` / `list_local_logs`. No env var: synced
+  directories persist in DuckDB (`local_logs.log_dirs(path, added_at)`). `sync_local_logs` with
+  no `dir` syncs the saved directories, else probes the per-OS default install paths
   (`…/World of Warcraft/_retail_/Logs`) and errors listing what it tried if none exist.
-- **Runs inside the MCP server process** (one per session), so it only runs while a session is
-  open; on start it **catches up** on everything appended since the last run. Since upstream's
-  multi-process DB model (short-lived write locks), several sessions may watch the same folder:
-  each commit runs under the write lock and is a compare-and-set on the stored offset, so only
-  one process applies each fight (the others report `superseded`).
-- `fs.watch` the directory for new `WoWCombatLog-*.txt` files (WoW starts a new file each time
-  logging is enabled) and tail appended bytes; keep a partial-line buffer (WoW flushes in chunks).
+- A sync imports every `WoWCombatLog*.txt` in the directory (nothing else), oldest first. All
+  but the newest file are finished (`final`); the newest may still be written, so a fight open at
+  its end waits for the next sync. Reading stops at the last complete line (WoW flushes in chunks).
+- Each commit runs under the write lock and is a compare-and-set on the stored offset, so two
+  sessions syncing at once never both apply a fight (the loser reports `superseded`).
 - Ingest state table `local_logs.ingest_files(report_code, path, file_size, byte_offset,
   schema_version, status, updated_at)`, keyed by report code (a hash of the file's first two
   lines, so a moved/renamed file resumes). A size shrink or schema version change → rescan from 0.
-  `status` is active / complete / ignored (deleted by the user: the watcher skips it).
+  `status` is active / complete / ignored (deleted by the user: syncs skip it).
 - Commit granularity: one transaction per **completed segment** (key end, boss pull end, trash
   segment end), storing the byte offset just past the segment's last line, so a crash/restart
   re-parses only the open segment; parser state never needs checkpointing. Between fights the
@@ -272,7 +272,7 @@ Log header: `COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.5`;
 
 ### Results of the implementation (same matched pair)
 - Import: 481k lines in ~3 s; re-import is a no-op; importing the file in 7 chunks split mid-line
-  (live) gives exactly the one-shot result; the watcher on a growing file does too.
+  (live) gives exactly the one-shot result; so does syncing a directory as the file grows.
 - Per fight: identical windows (to the ms) incl. the abandoned key; events 229,741 vs 229,767 and
   247,906 vs 247,995. Every event type matches exactly except `damage` (the 115 above).
 - Per player: healing identical; damage 0.2–1.1% higher locally (WCL's rule engine).

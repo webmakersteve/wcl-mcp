@@ -151,7 +151,7 @@ async function olderVersions(code: string): Promise<number[]> {
  */
 export async function notDownloadedMessage(code: string): Promise<string> {
   if (isLocalReportCode(code)) {
-    return `Local log '${code}' is not imported. Use import_local_log, or watch_logs for a live log.`;
+    return `Local log '${code}' is not imported. Use import_local_log or sync_local_logs.`;
   }
   const older = await olderVersions(code);
   if (older.length > 0) {

@@ -25,7 +25,7 @@ export async function deleteLocalReport(args: unknown) {
     const removedLog = await dropSchema(report_code);
     const removedRoutes = await dropRouteSchema(report_code);
     const removed = removedLog || removedRoutes;
-    // Keep the watcher from re-importing a log the user deleted; import_local_log un-ignores it.
+    // Keep sync_local_logs from re-importing a log the user deleted; import_local_log un-ignores it.
     const ingest = isLocalReportCode(report_code) ? await getIngest(report_code) : null;
     if (ingest) await setIngest(null, { ...ingest, byte_offset: 0, status: "ignored", updated_at: Date.now() });
     return ok({
