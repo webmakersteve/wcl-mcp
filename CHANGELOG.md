@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/webmakersteve/wcl-mcp/compare/v0.2.0...v0.2.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* don't strand the login when the client declines the URL prompt ([#6](https://github.com/webmakersteve/wcl-mcp/issues/6)) ([a30ee3a](https://github.com/webmakersteve/wcl-mcp/commit/a30ee3a8926177d19d078c843bebd15d5ef29139))
+* release the database file after writes that used an appender ([#5](https://github.com/webmakersteve/wcl-mcp/issues/5)) ([0471313](https://github.com/webmakersteve/wcl-mcp/commit/047131362b3ac54863476df00a56c06622fc2e4f))
+
 ## [0.2.0](https://github.com/webmakersteve/wcl-mcp/compare/v0.1.0...v0.2.0) (2026-10-17)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "wcl-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local MCP server giving an agent context on World of Warcraft runs from Warcraft Logs, backed by DuckDB.",
   "type": "module",
   "bin": {
