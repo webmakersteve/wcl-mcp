@@ -2,6 +2,7 @@ import { z } from "zod";
 import { queryRows } from "../db/duck.js";
 import {
   assertValidReportCode,
+  isLocalReportCode,
   quotedRouteSchema,
   quotedSchema,
   notDownloadedMessage,
@@ -12,6 +13,7 @@ import {
   SCHEMA_VERSION,
 } from "../db/schema.js";
 import { SEED_TABLES } from "../db/seeds.js";
+import { SOURCE_NOTES } from "../local/parser.js";
 import { getGameDataStatus } from "../gamedata/sync.js";
 import { gameDataTableDocs } from "../gamedata/tables.js";
 import { MDT_SCHEMA, mdtTableDocs } from "../mdt/data.js";
@@ -21,7 +23,7 @@ import { guard, ok, fail } from "./result.js";
 export const getReportDetailsShape = {
   report_code: z
     .string()
-    .describe("Warcraft Logs report code that has been downloaded locally."),
+    .describe("Report code of a downloaded WCL report or an imported local log (local_...)."),
 };
 
 const inputSchema = z.object(getReportDetailsShape);
@@ -100,10 +102,13 @@ export async function getReportDetails(args: unknown) {
       ...(existing.has("route_imports")
         ? { route_schema: routeSchemaName(report_code), route_schema_version: ROUTE_SCHEMA_VERSION }
         : {}),
+      source: isLocalReportCode(report_code) ? "local" : "wcl",
       query_hint:
         "Use execute_readonly_query(report_code, sql) with these tables referenced unqualified " +
         "(search_path is set to this report's schema). Join fight_events.source_id/target_id to " +
-        "actors.actor_id, and fight_events.fight_id to fights.fight_id.",
+        "actors.actor_id, and fight_events.fight_id to fights.fight_id. To compare reports " +
+        "(e.g. a local log against a WCL report), pass several in execute_readonly_query's reports.",
+      source_notes: SOURCE_NOTES,
       tables,
       game_data: gameData
         ? {

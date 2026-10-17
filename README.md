@@ -5,13 +5,14 @@ World of Warcraft dungeon or raid run from [Warcraft Logs](https://www.warcraftl
 
 It downloads a report's full combat-log event stream into a local [DuckDB](https://duckdb.org)
 database, then lets the agent inspect the data and run read-only SQL against it — fast, offline, and
-without hammering the WCL API.
+without hammering the WCL API. It can also import your own `WoWCombatLog` files (no upload
+needed, live as you play) into the same schema, and compare them with WCL reports.
 
 ## How it works
 
 1. **find** a report (or you hand the agent a report code).
 2. **download** it — the server pages the WCL v2 GraphQL API and materializes the run into a DuckDB
-   schema named `r_<reportCode>_v3` with five seed tables:
+   schema named `r_<reportCode>_v4` with five seed tables:
    - `report_details` — one row of high-level metadata
    - `fights` — one row per pull/encounter
    - `actors` — players/pets/NPCs (resolves event source/target ids to names)
@@ -35,8 +36,12 @@ with your Warcraft Logs account to also reach your private reports.
 | `find_reports` | Search your uploaded reports by zone + date range → report codes. |
 | `download_report` | Fetch a report into a local DuckDB schema (idempotent; `force` to rebuild). |
 | `get_report_details` | Describe a downloaded report: tables, schemas, stats, semantic guide. |
-| `execute_readonly_query` | Run a single read-only SQL statement scoped to one report. |
+| `execute_readonly_query` | Run a single read-only SQL statement scoped to one report, or across several (`reports`) to compare them. |
 | `delete_local_report` | Drop a report's local schema/tables. |
+| `import_local_log` | Import a `WoWCombatLog*.txt` file into the same schema as WCL downloads → a `local_…` report code. |
+| `sync_local_logs` | On request, import what's new in the WoW `Logs` directory's combat logs (directory remembered). |
+| `forget_log_dir` | Remove a saved log directory. |
+| `list_local_logs` | Saved log directories, and every imported log with its report code and fights. |
 | `lookup_spells` | Spell names, rendered descriptions, and mechanics (cooldown, charges, cost, duration...) by id or name. |
 | `sync_game_data` | Download spell data for the latest live build (automatic on first `lookup_spells`). |
 | `import_mdt_route` | Match a Mythic Dungeon Tools route string against a downloaded M+ run: re-slice it into the route's pulls (damage/DPS per planned pull, immune to pull chaining) and report how faithfully it was followed. |
@@ -80,6 +85,39 @@ the time those mobs were being fought (the union of each mob's first-hit-to-deat
   off-route kills, and skipped, out-of-order, chained, merged and split pulls.
 - Logs carry no positions, so same-npc mobs in neighbouring pulls can be swapped. Summons and boss
   adds that MDT doesn't list are attributed to their summoner's pull, or else the active pull.
+
+## Local combat logs
+
+`import_local_log` and `sync_local_logs` read the game's own combat log (`/combatlog`, with
+**Advanced Combat Logging** on) into a schema named `l_<hash>_v4` with the same tables, columns
+and event JSON as a WCL download. Its report code (`local_<hash>`) works with every report tool.
+
+- Fights are split like WCL: one per Mythic+ key (bosses are `dungeonencounterstart/end` events
+  inside it; an abandoned key ends at its last damage event), one per raid boss pull, and trash
+  segments between them. Actors and per-fight NPC instances follow WCL's numbering.
+- `sync_local_logs` (default: the saved directories, else the usual
+  `World of Warcraft/_retail_/Logs`) imports what was appended to each `WoWCombatLog*.txt` there
+  since the last sync; other files are ignored. Nothing runs in the background: ask for a sync to
+  get the latest fights. Each finished fight is committed (briefly taking the write lock) with the
+  byte offset to resume from, so a sync only parses what's new; a fight still in progress in the
+  newest log is picked up by the next sync. Commits check that offset, so two sessions syncing at
+  once don't import a fight twice.
+- Local logs mirror WCL's event shape but not its rule engine: damage WCL drops (anti-cheese) is
+  kept, so totals run ~1% higher; casts aren't flagged `fake`; no prepull buffs are synthesized.
+  `get_report_details` lists the differences (`source_notes`). Raw-only data (unit HP, position,
+  facing) is in `raw.local`.
+
+Compare a local log with a WCL report by passing both to `execute_readonly_query`:
+
+```json
+{ "reports": { "mine": "local_63028f1d62c0", "wcl": "nNMJGp1ThaHdQ6By" },
+  "sql": "SELECT source_owner_key AS player, report, sum(amount) AS damage FROM all_events WHERE type = 'damage' AND source_owner_key IS NOT NULL GROUP BY ALL ORDER BY player, report" }
+```
+
+`all_events` / `all_fights` / `all_actors` stack the reports with a `report` column (the alias);
+actor ids differ per report, so `all_events` adds stable keys (`source_key`, `target_key`,
+`source_owner_key`: `Name-Server` for players, `npc:<id>` for NPCs) and `t_fight` (ms since the
+fight's start). `<alias>_fight_events` etc. address one report.
 
 ## Install as a Claude Code plugin
 
@@ -255,12 +293,14 @@ ORDER BY 1;
 - Downloaded reports are deleted `WCL_REPORT_TTL_DAYS` (default 7) days after download, checked
   at server startup and on each `download_report`; the agent just downloads them again. Shared game
   data (`gamedata`) and MDT data never expire.
-- Schema version is `v3`; the `_v<N>` suffix on each report schema allows future layout changes.
+- Schema version is `v4`; the `_v<N>` suffix on each report schema allows future layout changes.
   Reports downloaded under an older version must be downloaded again (tools say so), and the old
   copies are cleaned up by the TTL.
 - Imported MDT routes live in their own schema, `route_<reportCode>_v1`, versioned separately
   from the log schema, so re-downloading a report (including after a log schema change) keeps its
   routes. Queries see both schemas' tables unqualified. Routes expire `WCL_REPORT_TTL_DAYS` after
   their last import; `delete_local_report` removes them along with the log.
+- Imported local logs (`l_<hash>_v4`) don't expire: the file is the source, and the next sync
+  would re-import it. Remove one with `delete_local_report` (later syncs then skip it).
 
 See `PLAN.md` for the full design.

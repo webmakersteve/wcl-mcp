@@ -1,4 +1,4 @@
-import { assertValidReportCode } from "../db/schema.js";
+import { assertWclReportCode } from "../db/schema.js";
 
 /**
  * Wipefest (wipefest.gg) has no documented public API; this is the backend its web app uses.
@@ -28,7 +28,7 @@ export async function fetchFightInsights(
   reportCode: string,
   fightId: number,
 ): Promise<WipefestInsight[]> {
-  assertValidReportCode(reportCode);
+  assertWclReportCode(reportCode);
   const url =
     `${WIPEFEST_API}/report/${reportCode}/fight/${fightId}` +
     "?insightsOnly=true&markupFormat=markdown";

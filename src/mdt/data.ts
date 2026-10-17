@@ -1,5 +1,5 @@
 import { quotedIdentifier } from "@duckdb/node-api";
-import { queryRows, write } from "../db/duck.js";
+import { big, queryRows, write } from "../db/duck.js";
 import type { TableSpec } from "../db/seeds.js";
 import { parseAssignedTable, type LuaTable, type LuaValue } from "./lua.js";
 
@@ -233,7 +233,7 @@ function loadDungeons(commit: string, dungeons: ParsedDungeon[]): Promise<void> 
       await conn.run(
         `CREATE TABLE ${q(MDT_SCHEMA)}.${q(META_TABLE)} AS
          SELECT $commit::VARCHAR AS commit, $now::BIGINT AS synced_at_ms`,
-        { commit, now: Date.now() },
+        { commit, now: big(Date.now()) },
       );
       await conn.run("COMMIT");
     } catch (err) {

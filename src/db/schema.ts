@@ -6,7 +6,7 @@ import { queryRows, readRows, write } from "./duck.js";
  * Schema-evolution version. Bump when the seed table layout changes; old reports
  * keep their `_v<N>` schema and can be re-downloaded under the new version.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Version of the per-report route schema written by import_mdt_route, kept separate from
@@ -18,19 +18,43 @@ export const ROUTE_SCHEMA_VERSION = 1;
 /** WCL report codes are alphanumeric (a–z, A–Z, 0–9), typically 16 chars. */
 const REPORT_CODE_RE = /^[A-Za-z0-9]{1,32}$/;
 
+/**
+ * Codes for imported local combat logs: `local_` + 12 hex chars. The underscore can't
+ * appear in a WCL code, so the two never collide.
+ */
+const LOCAL_CODE_RE = /^local_([0-9a-f]{12})$/;
+
+export function isLocalReportCode(code: string): boolean {
+  return LOCAL_CODE_RE.test(code);
+}
+
 export function assertValidReportCode(code: string): void {
-  if (!REPORT_CODE_RE.test(code)) {
+  if (!REPORT_CODE_RE.test(code) && !LOCAL_CODE_RE.test(code)) {
     throw new Error(
-      `Invalid report code: ${JSON.stringify(code)}. ` +
-        "Expected an alphanumeric Warcraft Logs code (e.g. aBcD1234WxYz5678).",
+      `Invalid report code: ${JSON.stringify(code)}. Expected an alphanumeric Warcraft Logs ` +
+        "code (e.g. aBcD1234WxYz5678) or a local log code (e.g. local_0123456789ab).",
     );
   }
 }
 
-/** Derive the per-report schema name, e.g. `r_aBcD1234_v1`. */
+/** Like assertValidReportCode, but rejects local log codes (for calls that go to WCL). */
+export function assertWclReportCode(code: string): void {
+  if (!REPORT_CODE_RE.test(code)) {
+    throw new Error(
+      `${JSON.stringify(code)} is not a Warcraft Logs report code` +
+        (isLocalReportCode(code) ? " (it's an imported local combat log)." : "."),
+    );
+  }
+}
+
+/**
+ * Derive the per-report schema name: `r_<code>_v<N>` for WCL reports, `l_<hex>_v<N>` for
+ * imported local logs.
+ */
 export function schemaName(code: string, version = SCHEMA_VERSION): string {
   assertValidReportCode(code);
-  return `r_${code}_v${version}`;
+  const local = LOCAL_CODE_RE.exec(code);
+  return local ? `l_${local[1]}_v${version}` : `r_${code}_v${version}`;
 }
 
 /** SQL-safe quoted identifier for the schema (handles case-sensitivity of codes). */
@@ -126,6 +150,9 @@ async function olderVersions(code: string): Promise<number[]> {
  * was never downloaded, or was downloaded with an older layout and needs downloading again.
  */
 export async function notDownloadedMessage(code: string): Promise<string> {
+  if (isLocalReportCode(code)) {
+    return `Local log '${code}' is not imported. Use import_local_log or sync_local_logs.`;
+  }
   const older = await olderVersions(code);
   if (older.length > 0) {
     return (

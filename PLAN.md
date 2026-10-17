@@ -169,3 +169,117 @@ INSTALL/LOAD/SET/CALL/EXPORT). The per-report `search_path` scoping also limits 
 ## Out of scope for v1 (noted for later)
 - Player-name search in `find_reports`; additional seed tables
   (e.g. pre-aggregated damage/healing summary tables); schema migrations between versions; circuit breaker.
+
+---
+
+# Phase 2: Local combat logs (hybrid, unified schema)
+
+## Context
+Import raw `WoWCombatLog*.txt` files alongside WCL downloads, **into the same schema**, so local
+and remote runs can be queried and compared with identical SQL. WCL stays the default source:
+report discovery, other people's logs, title/owner and Wipefest insights only exist there.
+WoWAnalyzer's CombatLogParser (2018 prototype, unlicensed) was reviewed and is not reused; we
+write our own version-aware parser.
+
+## Unified schema (SCHEMA_VERSION 3)
+- **Local importer emits WCL-shaped events**: same `type` names, same `raw` JSON keys, same id
+  semantics (actor ids, 1-based `*_instance`, ms relative to report start). Flags WCL derives
+  that we can't (e.g. `cast.fake`) are omitted, never faked. Raw-only data (positions, HP from
+  advanced logging) goes under `raw.local` so it can't collide with WCL keys.
+- Fight layout mirrors WCL: one fight per M+ key (bosses as `dungeonencounterstart/end` events),
+  one per raid boss pull, trash segments as `encounter_id = 0` fights.
+- New nullable columns:
+  - `report_details.source` (`'wcl' | 'local'`), `log_path`
+  - `fights.game_zone_id`, `challenge_mode_id`: game-native ids. WCL's encounter ids for keys
+    (e.g. Kings' Rest = `61762` on fights but `11762` on `dungeonstart`) aren't comparable across sources.
+  - `actors.guid`, `actors.player_key` (`Name-Server`): the documented cross-report player key.
+    Verify WCL player `game_id` == numeric part of the player GUID; if so, it's a second key.
+- Local schemas: `l_<hash>_v<N>`, hash of the file's first two lines (stable as it grows or moves).
+- No compare tool. `execute_readonly_query` accepts `reports: { alias: code, ... }` (any number,
+  any source) in place of a single `report_code`. Per call, the server creates TEMP views on the
+  call's connection and drops them after, so the user SQL guard is unchanged:
+  - `<alias>_<table>` per report (DuckDB temp views can't live in a custom schema);
+  - `all_fights` / `all_actors` / `all_events`: UNION ALL across reports with a `report` column.
+    `all_events` adds stable keys, since actor ids are per-report: `source_key`/`target_key`
+    (`player_key` for players, `npc:<game_id>[:instance]` otherwise), `source_owner_key` (pet
+    owner) and `t_fight` (ms since the fight's start).
+  Comparisons are then `GROUP BY report` or DuckDB `PIVOT ... ON report`.
+
+## Parser (`src/local/`)
+- Streaming line reader → tokenizer (nested `[]`/`()`/quoted strings) → per-`COMBAT_LOG_VERSION`
+  field layouts for prefixes/suffixes → WCL-shaped event mapper.
+- Stateful resolution: GUID → actor id (with NPC `game_id` + spawn UID → instance), pet ownership
+  (`SPELL_SUMMON` + advanced-logging owner GUID), death killer (the last overkilling hit, as WCL does), `hitType`
+  from crit/glancing flags, segmenter (ENCOUNTER_*, CHALLENGE_MODE_*, trash heuristics).
+- Requires Advanced Combat Logging; detect when it's off and record that in `report_details`.
+
+## Log directory sync (on request)
+- Originally a background watcher (`fs.watch` + polling, resumed on server start). Dropped: with
+  one server per session every open session parsed the same lines, for only slightly faster
+  ingestion. Instead the user asks for a sync.
+- Tools: `sync_local_logs(dir?)` / `forget_log_dir(dir?)` / `list_local_logs`. No env var: synced
+  directories persist in DuckDB (`local_logs.log_dirs(path, added_at)`). `sync_local_logs` with
+  no `dir` syncs the saved directories, else probes the per-OS default install paths
+  (`…/World of Warcraft/_retail_/Logs`) and errors listing what it tried if none exist.
+- A sync imports every `WoWCombatLog*.txt` in the directory (nothing else), oldest first. All
+  but the newest file are finished (`final`); the newest may still be written, so a fight open at
+  its end waits for the next sync. Reading stops at the last complete line (WoW flushes in chunks).
+- Each commit runs under the write lock and is a compare-and-set on the stored offset, so two
+  sessions syncing at once never both apply a fight (the loser reports `superseded`).
+- Ingest state table `local_logs.ingest_files(report_code, path, file_size, byte_offset,
+  schema_version, status, updated_at)`, keyed by report code (a hash of the file's first two
+  lines, so a moved/renamed file resumes). A size shrink or schema version change → rescan from 0.
+  `status` is active / complete / ignored (deleted by the user: syncs skip it).
+- Commit granularity: one transaction per **completed segment** (key end, boss pull end, trash
+  segment end), storing the byte offset just past the segment's last line, so a crash/restart
+  re-parses only the open segment; parser state never needs checkpointing. Between fights the
+  offset advances to the end of what was read. A first version won't show in-progress pulls.
+  A later `live_*` staging table could expose the open segment for "what's happening now" queries.
+- Idempotent: segment schema name is deterministic, so re-import replaces, never duplicates.
+
+## Validation
+Matched pair: WCL `fdL2G1c6Vr7H3NDb` (Kings' Rest +16, also fight 5 of `cq6nxBNF1P8hKAwQ`) +
+the raw log of the same run. Diff per event type counts, per-player damage/healing totals, deaths
+and killers, pet attribution, instance numbering (MDT `route_units` join must still match).
+That diff becomes the regression test.
+
+**Parity is approximate by design.** WCL runs a rules engine on top of the raw events: it drops or
+reattributes damage to stop cheese, flags casts as `fake`, and so on. We don't replicate it. Match
+WCL's *shape* (types, keys, id semantics, fight windows) and keep counts and totals close. The
+regression test asserts tolerances (e.g. per-type counts and per-player damage/healing within a
+few %), not equality. Deliberate differences are listed in the semantic layer so the agent
+knows that a local-vs-WCL delta of that kind is expected, not a finding.
+
+### Findings from the first matched pair (WCL `nNMJGp1ThaHdQ6By` vs `WoWCombatLog-101526_210808.txt`)
+Log header: `COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.5`; timestamps are
+`M/D/YYYY HH:MM:SS.mmm±TZ`. Within WCL's fight windows (diff scripts kept outside the repo for now):
+- Fight windows: start = `CHALLENGE_MODE_START` and end = `CHALLENGE_MODE_END`, both exact to the ms.
+  WoW also writes a zeroed `CHALLENGE_MODE_END` right before each `CHALLENGE_MODE_START` (a
+  reset); ignore it. An abandoned key has no end marker, and WCL ends the fight at the last
+  combat event before leaving the zone (`kill=false`).
+- Exact 1:1 mappings: `absorbed` = `SPELL_ABSORBED`; `heal` = `SPELL_HEAL` + `SPELL_PERIODIC_HEAL`
+  (`tick` = periodic); `resourcechange` = `SPELL_ENERGIZE` + `SPELL_PERIODIC_ENERGIZE`; summon,
+  death (`UNIT_DIED`), interrupt, dispel, aurabroken, extraattacks, combatantinfo, begincast.
+- `damage` = SPELL/PERIODIC/SWING damage + their `_MISSED` + environmental (`tick` = periodic,
+  exact). Swing ability = `1` when physical, `-school` otherwise (e.g. `-8` nature, `-32` shadow).
+  Environmental = ability `3`. WCL has 118 more swing events than `SWING_DAMAGE`+`SWING_MISSED`
+  (~0.06% of damage events) plus 3 single-event diffs. Within tolerance; not chased.
+- `cast` = `SPELL_CAST_SUCCESS` + one `melee:true` cast per swing (`SWING_DAMAGE`+`SWING_MISSED`),
+  exactly. 1,178 of those casts carry `fake:true` on WCL (proc/secondary casts per its own
+  per-ability table, e.g. Mutilate off-hand, Charge, Skull Bash); local imports don't flag them.
+- WCL M+ `fight_percentage` (100 on a timed key, 12.07 on the abandoned one) has an unknown meaning;
+  left null for local keys.
+
+### Results of the implementation (same matched pair)
+- Import: 481k lines in ~3 s; re-import is a no-op; importing the file in 7 chunks split mid-line
+  (live) gives exactly the one-shot result; so does syncing a directory as the file grows.
+- Per fight: identical windows (to the ms) incl. the abandoned key; events 229,741 vs 229,767 and
+  247,906 vs 247,995. Every event type matches exactly except `damage` (the 115 above).
+- Per player: healing identical; damage 0.2–1.1% higher locally (WCL's rule engine).
+- Deaths 339 = 339; killers 214 vs 230 (the overkill rule covers 214 of WCL's 230).
+- Found along the way: the DuckDB node bindings bind JS numbers as 32-bit INTEGER, wrapping epoch
+  ms / byte offsets / large GUID ids. All BIGINT params now go through `big()` (db/duck.ts); this
+  also fixes WCL `report_details.start_time` and MDT's `synced_at_ms`, which were stored wrapped.
+- Found along the way: recreating a schema that an earlier process wrote to disk fails to commit
+  inside a transaction ("Could not commit creation of dependency"). Local imports create tables
+  before their data transaction; download_report's drop+create in one transaction is unaffected.

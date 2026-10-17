@@ -26,18 +26,20 @@ export const SEED_TABLES: Record<string, TableSpec> = {
     description:
       "One row of high-level metadata about the whole report (the run). Start here to orient yourself.",
     columns: {
-      report_code: { type: "VARCHAR", description: "Warcraft Logs report code (the run identifier)." },
-      title: { type: "VARCHAR", description: "User-provided title of the report." },
-      owner: { type: "VARCHAR", description: "WCL username that uploaded the report." },
-      zone_id: { type: "INTEGER", description: "WCL zone (instance) id.", usage: "Identifies the raid/dungeon zone." },
-      zone_name: { type: "VARCHAR", description: "Human-readable instance name, e.g. 'Liberation of Undermine'." },
-      region: { type: "VARCHAR", description: "Region slug (us, eu, kr, tw, cn)." },
+      report_code: { type: "VARCHAR", description: "Report code: a Warcraft Logs code, or local_<hex> for an imported combat log file." },
+      title: { type: "VARCHAR", description: "User-provided title of the report (the file name for local logs)." },
+      owner: { type: "VARCHAR", description: "WCL username that uploaded the report; null for local logs." },
+      zone_id: { type: "INTEGER", description: "WCL zone id (e.g. a raid tier or M+ season); for local logs, the game instance id of the first fight.", usage: "Not comparable across sources; use fights.game_zone_id." },
+      zone_name: { type: "VARCHAR", description: "Human-readable zone name, e.g. 'Liberation of Undermine' or 'Mythic+ Season 2'." },
+      region: { type: "VARCHAR", description: "Region (US, EU, KR, TW, CN)." },
       start_time: { type: "BIGINT", description: "Report start, Unix epoch milliseconds (UTC)." },
       end_time: { type: "BIGINT", description: "Report end, Unix epoch milliseconds (UTC)." },
       num_fights: { type: "INTEGER", description: "Number of fights (pulls/encounters) in the report." },
       total_events: { type: "BIGINT", description: "Total rows materialized into fight_events." },
       schema_version: { type: "INTEGER", description: "Seed-schema version used for this download." },
-      downloaded_at: { type: "BIGINT", description: "When this report was downloaded locally, Unix epoch milliseconds." },
+      downloaded_at: { type: "BIGINT", description: "When this report was downloaded or last imported locally, Unix epoch milliseconds." },
+      source: { type: "VARCHAR", description: "'wcl' (downloaded from Warcraft Logs) or 'local' (imported from a WoWCombatLog file).", usage: "Local logs follow WCL's shape but skip WCL's rule engine; see the source_notes in get_report_details." },
+      log_path: { type: "VARCHAR", description: "Absolute path of the imported combat log file; null for WCL reports." },
     },
   },
 
@@ -47,13 +49,15 @@ export const SEED_TABLES: Record<string, TableSpec> = {
     columns: {
       fight_id: { type: "INTEGER", description: "Fight id, unique within the report.", usage: "Join target for fight_events.fight_id." },
       name: { type: "VARCHAR", description: "Encounter/boss or trash segment name." },
-      encounter_id: { type: "INTEGER", description: "WCL encounter id (0 for trash / non-boss segments)." },
+      encounter_id: { type: "INTEGER", description: "Encounter id (0 for trash / non-boss segments). Raid bosses use the game's encounter id. M+ keys use WCL's own numbering, which isn't stable; local logs use 10000 + game_zone_id.", usage: "To match the same dungeon across sources, use game_zone_id." },
       difficulty: { type: "INTEGER", description: "Difficulty id (e.g. 3=Normal, 4=Heroic, 5=Mythic for raids; null for M+)." },
       keystone_level: { type: "INTEGER", description: "Mythic+ keystone level, null for raid fights." },
       kill: { type: "BOOLEAN", description: "Whether the encounter was a kill (true) or a wipe (false)." },
       fight_percentage: { type: "DOUBLE", description: "Boss health remaining at end of a wipe, as a percentage (0 = kill)." },
       start_time: { type: "BIGINT", description: "Fight start, milliseconds relative to report start_time." },
       end_time: { type: "BIGINT", description: "Fight end, milliseconds relative to report start_time." },
+      game_zone_id: { type: "INTEGER", description: "The game's instance (map) id, e.g. 2521 for Ruby Life Pools.", usage: "Stable across sources: match the same dungeon/raid between reports." },
+      challenge_mode_id: { type: "INTEGER", description: "The game's challenge mode (M+ dungeon) id; local logs only, null for WCL reports and raids." },
     },
   },
 
@@ -62,12 +66,14 @@ export const SEED_TABLES: Record<string, TableSpec> = {
       "One row per actor (player, pet, NPC) seen in the report's master data. Resolve event source/target ids to names here.",
     columns: {
       actor_id: { type: "INTEGER", description: "Actor id, unique within the report.", usage: "Join target for fight_events.source_id and target_id." },
-      game_id: { type: "BIGINT", description: "In-game id: the creature (NPC) id for NPCs and bosses, 0 for players.", usage: "Matches mdt.enemies.npc_id. One NPC type is one actor; its individual mobs are distinguished by fight_events.source_instance/target_instance." },
+      game_id: { type: "BIGINT", description: "In-game id: the creature (NPC) id for NPCs, bosses and pets; for players, the hex part of the player GUID as an integer.", usage: "Matches mdt.enemies.npc_id. One NPC type is one actor; its individual mobs are distinguished by fight_events.source_instance/target_instance." },
       pet_owner: { type: "INTEGER", description: "For pets, the owning actor_id; null otherwise.", usage: "Attribute pet damage to its player." },
       name: { type: "VARCHAR", description: "Actor name (character, pet, or NPC name)." },
       type: { type: "VARCHAR", description: "High-level type: 'Player', 'Pet', 'NPC', 'Boss'." },
       sub_type: { type: "VARCHAR", description: "For players, the class (e.g. 'Mage'); otherwise a finer type." },
       server: { type: "VARCHAR", description: "Server/realm name for player actors, null otherwise." },
+      guid: { type: "VARCHAR", description: "Game GUID: the player GUID for players; for NPCs/pets, the GUID of the first spawn seen. Local logs only (null for WCL reports)." },
+      player_key: { type: "VARCHAR", description: "'Name-Server' for players, null otherwise.", usage: "Stable across reports and sources: join the same player between reports." },
     },
   },
 
@@ -81,8 +87,8 @@ export const SEED_TABLES: Record<string, TableSpec> = {
       type: { type: "VARCHAR", description: "Event type, e.g. 'damage', 'heal', 'cast', 'begincast', 'applybuff', 'death', 'resourcechange'.", usage: "Filter by event kind. Damage events are type='damage'." },
       source_id: { type: "INTEGER", description: "Actor id that caused the event.", usage: "Join to actors.actor_id to get the source name/class." },
       target_id: { type: "INTEGER", description: "Actor id the event targeted.", usage: "Join to actors.actor_id to get the target name." },
-      source_instance: { type: "INTEGER", description: "Which individual mob of source_id's NPC type (1-based); null for players and single-instance actors.", usage: "Identify one mob as (source_id, coalesce(source_instance, 1))." },
-      target_instance: { type: "INTEGER", description: "Which individual mob of target_id's NPC type (1-based); null for players and single-instance actors.", usage: "Identify one mob as (target_id, coalesce(target_instance, 1)); joins to route_units (actor_id, instance)." },
+      source_instance: { type: "INTEGER", description: "Which individual mob of source_id's NPC type (1-based, numbered per fight in order of first appearance); null for players and NPC types with a single spawn in the fight.", usage: "Identify one mob as (source_id, coalesce(source_instance, 1))." },
+      target_instance: { type: "INTEGER", description: "Which individual mob of target_id's NPC type (1-based, numbered per fight in order of first appearance); null for players and NPC types with a single spawn in the fight.", usage: "Identify one mob as (target_id, coalesce(target_instance, 1)); joins to route_units (actor_id, instance)." },
       ability_game_id: { type: "BIGINT", description: "Game spell/ability id involved in the event (null for some events)." },
       amount: { type: "BIGINT", description: "Effect magnitude: damage dealt, healing done, resource gained, etc. (null when not applicable)." },
       hit_type: { type: "INTEGER", description: "Hit classification code (e.g. crit, hit, miss); event-type dependent." },
@@ -118,19 +124,24 @@ export const SEED_TABLES: Record<string, TableSpec> = {
 
 export type SeedTableName = keyof typeof SEED_TABLES;
 
-function createTableSql(code: string, table: string, spec: TableSpec): string {
+function createTableSql(code: string, table: string, spec: TableSpec, ifNotExists: boolean): string {
   const cols = Object.entries(spec.columns)
     .map(([name, c]) => `  ${quotedIdentifier(name)} ${c.type}`)
     .join(",\n");
-  return `CREATE TABLE ${quotedSchema(code)}.${quotedIdentifier(table)} (\n${cols}\n)`;
+  const create = ifNotExists ? "CREATE TABLE IF NOT EXISTS" : "CREATE TABLE";
+  return `${create} ${quotedSchema(code)}.${quotedIdentifier(table)} (\n${cols}\n)`;
 }
 
 /**
  * Create all seed tables for a report (schema must already exist). Runs on the
  * caller's connection so it can participate in the download transaction.
  */
-export async function createSeedTables(conn: DuckDBConnection, code: string): Promise<void> {
+export async function createSeedTables(
+  conn: DuckDBConnection,
+  code: string,
+  { ifNotExists = false } = {},
+): Promise<void> {
   for (const [table, spec] of Object.entries(SEED_TABLES)) {
-    await conn.run(createTableSql(code, table, spec));
+    await conn.run(createTableSql(code, table, spec, ifNotExists));
   }
 }
