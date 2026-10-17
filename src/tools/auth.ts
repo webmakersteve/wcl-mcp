@@ -17,6 +17,12 @@ type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 /** How long the login tool blocks for the user's approval before returning "pending". */
 const LOGIN_WAIT_MS = 90_000;
 const PROGRESS_INTERVAL_MS = 5_000;
+/**
+ * A decline or cancel faster than this can't have come from the user: the client advertised
+ * URL elicitation but answered without showing the prompt (seen with the Claude desktop app).
+ * Treat it like a client without URL elicitation and open the browser instead.
+ */
+const INSTANT_ANSWER_MS = 1_000;
 
 export const loginShape = {};
 
@@ -115,12 +121,22 @@ export async function login(server: McpServer, extra: Extra) {
     }
 
     const attempt = startLogin();
+    const client = server.server.getClientVersion()?.name ?? null;
+    const asked = Date.now();
     const answer = await elicitLogin(server, attempt, extra);
-    if (answer === "decline" || answer === "cancel") {
-      attempt.cancel();
+    const refused = answer === "decline" || answer === "cancel";
+    if (refused && Date.now() - asked >= INSTANT_ANSWER_MS) {
+      // The user may have refused, or the client may not have shown the prompt at all. Keep the
+      // attempt open (it times out on its own) and hand back the URL, so the login can still be
+      // finished by opening it directly; auth_status confirms once it's done.
       return ok({
         status: answer === "decline" ? "declined" : "cancelled",
-        message: "Login not completed.",
+        client,
+        login_url: attempt.url,
+        message:
+          "The client reported the login prompt as " + (answer === "decline" ? "declined" : "cancelled") +
+          ". If the user didn't mean to refuse (or never saw a prompt), give them login_url to open " +
+          "and approve; then call auth_status to confirm. Call logout to abandon the attempt.",
         access: loggedOutAccess(),
       });
     }
@@ -137,6 +153,8 @@ export async function login(server: McpServer, extra: Extra) {
     if (!auth) {
       return ok({
         status: "pending",
+        method,
+        client,
         login_url: attempt.url,
         message:
           "Still waiting for approval. Ask the user to finish logging in at login_url (it should " +
