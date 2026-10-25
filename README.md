@@ -131,6 +131,16 @@ Warcraft Logs, and the database lives in the per-user data directory described b
 Node.js 20+ on your PATH; Claude Code installs the npm dependencies (~120 MB, mostly DuckDB's
 native binary) when it installs the plugin.
 
+### Skills
+
+The plugin ships skills that Claude loads when it uses the tools:
+
+- **class-analyzer** ([skills/class-analyzer/SKILL.md](skills/class-analyzer/SKILL.md)): how to
+  evaluate a player of each class and spec. It lists every spec's role and a short description of
+  how it plays, and links its SimulationCraft APL and Wowhead rotation and abilities guides, which
+  Claude fetches on demand so they stay current. For pet specs it lists the pets and has Claude
+  credit pet actions to the owning player.
+
 ### Releases
 
 Releases are automated with [release-please](https://github.com/googleapis/release-please), so
