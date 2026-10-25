@@ -140,6 +140,10 @@ The plugin ships skills that Claude loads when it uses the tools:
   how it plays, and links its SimulationCraft APL and Wowhead rotation and abilities guides, which
   Claude fetches on demand so they stay current. For pet specs it lists the pets and has Claude
   credit pet actions to the owning player.
+- **dungeon-analyzer** ([skills/dungeon-analyzer/SKILL.md](skills/dungeon-analyzer/SKILL.md)): how
+  to review a Mythic+ run. It lists the season's dungeons with a short description, their bosses,
+  and the ids that identify them in the database, and links Method's dungeon guide and ability
+  tracker for each, which Claude fetches for the mechanics, interrupts, and avoidable damage.
 
 ### Releases
 
