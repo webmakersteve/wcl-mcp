@@ -36,6 +36,8 @@ cp "$repo/package.json" "$repo/package-lock.json" "$repo/README.md" "$stage/"
   delete pkg.devDependencies;
   fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
 ' && npm install --package-lock-only --ignore-scripts --no-audit --no-fund --loglevel=error >&2)
+# Skills Claude Code loads alongside the MCP server.
+rsync -a "$repo/skills/" "$stage/skills/"
 # Runtime JS (and source maps for stack traces); type declarations aren't needed.
 rsync -a --exclude '*.d.ts' --exclude '*.d.ts.map' "$repo/dist/" "$stage/dist/"
 
