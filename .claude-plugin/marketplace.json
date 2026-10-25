@@ -10,8 +10,8 @@
       "name": "wcl-mcp",
       "source": {
         "source": "archive",
-        "url": "https://github.com/webmakersteve/wcl-mcp/releases/download/v0.2.1/wcl-mcp-0.2.1.zip",
-        "sha256": "dca3f9df716d48661835df3f814a3a5af96e5e24da1a282e6899c0e55d6bee00"
+        "url": "https://github.com/webmakersteve/wcl-mcp/releases/download/v0.3.0/wcl-mcp-0.3.0.zip",
+        "sha256": "a088f4dacc0d93a70861df224afa93e2ef242ba6be2f3de32e8101e2491ef47b"
       },
       "description": "Analyze Warcraft Logs reports (including private ones) with a local DuckDB.",
       "category": "gaming"
