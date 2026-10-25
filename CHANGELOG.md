@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/webmakersteve/wcl-mcp/compare/v0.2.1...v0.3.0) (2026-10-25)
+
+
+### Features
+
+* add class-analyzer skill for evaluating players by spec ([#8](https://github.com/webmakersteve/wcl-mcp/issues/8)) ([13dfea5](https://github.com/webmakersteve/wcl-mcp/commit/13dfea53822ec75d3b7cea82769150f67fb5cc12))
+* add dungeon-analyzer skill for reviewing Mythic+ runs ([#10](https://github.com/webmakersteve/wcl-mcp/issues/10)) ([2e9efcd](https://github.com/webmakersteve/wcl-mcp/commit/2e9efcd45bcd30ca67955f7bbc58c14251b91a6a))
+
 ## [0.2.1](https://github.com/webmakersteve/wcl-mcp/compare/v0.2.0...v0.2.1) (2026-10-17)
 
 

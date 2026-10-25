@@ -1,7 +1,7 @@
 {
   "name": "wcl-mcp",
   "displayName": "Warcraft Logs",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Analyze World of Warcraft raids and Mythic+ runs from Warcraft Logs: download reports (including your private ones) into a local DuckDB, query them with SQL, look up spells, match MDT routes, and get Wipefest pull insights.",
   "author": {
     "name": "webmakersteve",
