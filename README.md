@@ -38,8 +38,8 @@ with your Warcraft Logs account to also reach your private reports.
 | `get_report_details` | Describe a downloaded report: tables, schemas, stats, semantic guide. |
 | `execute_readonly_query` | Run a single read-only SQL statement scoped to one report, or across several (`reports`) to compare them. |
 | `delete_local_report` | Drop a report's local schema/tables. |
-| `import_local_log` | Import a `WoWCombatLog*.txt` file into the same schema as WCL downloads → a `local_…` report code. |
-| `sync_local_logs` | On request, import what's new in the WoW `Logs` directory's combat logs (directory remembered). |
+| `import_local_log` | Import a `WoWCombatLog*.txt` file (on disk, or on a [WoW Log Server](#combat-logs-from-another-machine-wow-log-server)) into the same schema as WCL downloads → a `local_…` report code. |
+| `sync_local_logs` | On request, import what's new in the WoW `Logs` directory's combat logs, or a WoW Log Server's (location remembered). |
 | `forget_log_dir` | Remove a saved log directory. |
 | `list_local_logs` | Saved log directories, and every imported log with its report code and fights. |
 | `lookup_spells` | Spell names, rendered descriptions, and mechanics (cooldown, charges, cost, duration...) by id or name. |
@@ -106,6 +106,24 @@ and event JSON as a WCL download. Its report code (`local_<hash>`) works with ev
   kept, so totals run ~1% higher; casts aren't flagged `fake`; no prepull buffs are synthesized.
   `get_report_details` lists the differences (`source_notes`). Raw-only data (unit HP, position,
   facing) is in `raw.local`.
+
+### Combat logs from another machine (WoW Log Server)
+
+When WoW runs on a different PC than the agent, run
+[WoW Log Server](https://github.com/webmakersteve/wow-log-server) on the gaming PC. It serves that
+PC's WoW `Logs` folders over HTTP, and both tools take its URL in place of a path:
+
+- `sync_local_logs` with `dir: "http://gaming-pc:5180"` (every flavor) or
+  `"http://gaming-pc:5180/retail"` (one flavor). Like a directory, the URL is saved, so later syncs
+  with no `dir` include it. Each flavor's newest combat log is treated like the newest file on disk.
+- `import_local_log` with `path: "http://gaming-pc:5180/retail/WoWCombatLog-110526_100931.txt"`.
+- If the server has `WowLogServer:ApiKey` set, set `WOWLOG_API_KEY` to the same value.
+
+The server indexes logs by line and serves only complete lines, so a remote import resumes from a
+line number, not a byte offset. Each request is pinned to the file's `fileId`, so a file replaced
+mid-read is detected. A log gets the same `local_…` report code whether it's read from disk or the
+server, and the import is identical either way. Switching one log between the two starts its import
+over, because the stored position is in the other source's units.
 
 Compare a local log with a WCL report by passing both to `execute_readonly_query`:
 
@@ -185,6 +203,7 @@ config, e.g. `env` in `.mcp.json`. This repo's `.mcp.json` sets `WCL_DB_PATH` fo
 | `WCL_DB_PATH` | per-user data dir (below) | DuckDB file location |
 | `WCL_AUTH_PATH` | `~/.config/wcl-mcp/auth.json` | Where login tokens are stored |
 | `WCL_REPORT_TTL_DAYS` | `7` | Days a downloaded report is kept before it's deleted; `0` keeps reports forever |
+| `WOWLOG_API_KEY` | unset | API key for a [WoW Log Server](#combat-logs-from-another-machine-wow-log-server) that requires one (sent as `X-Api-Key`) |
 | `WCL_DB_LOCK_TIMEOUT_SECONDS` | `300` | How long to wait for another wcl-mcp process (e.g. another Claude Code session) to release the DuckDB file before a tool call fails |
 
 The DuckDB file defaults to a per-user data directory, so downloaded reports and game data persist

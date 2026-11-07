@@ -176,7 +176,9 @@ server.registerTool(
       "schema as WCL downloads, so it can be queried and compared with WCL reports. Fights are " +
       "split the way WCL does (M+ keys, boss pulls, trash). Returns a local_ report code usable " +
       "anywhere a report code is. Re-running only parses what's new. Works offline, including " +
-      "for logs never uploaded to WCL. For the WoW Logs directory, use sync_local_logs.",
+      "for logs never uploaded to WCL. Also takes a log on a WoW Log Server (WoW running on " +
+      "another machine): http://<host>:5180/<version>/<filename>. For the WoW Logs directory, " +
+      "use sync_local_logs.",
     inputSchema: importLocalLogShape,
   },
   (args) => importLocalLog(args),
@@ -191,7 +193,9 @@ server.registerTool(
       "WoWCombatLog*.txt file there, including the one being written right now (fights that " +
       "have ended become queryable; one still in progress waits for the next sync). Only parses " +
       "what's new. Call it when the user asks for their latest local data. The directory is " +
-      "saved for later syncs; defaults to the saved directories, else the usual install location.",
+      "saved for later syncs; defaults to the saved directories, else the usual install location. " +
+      "When WoW runs on another machine with WoW Log Server, pass its URL (http://<host>:5180, " +
+      "optionally /<version>) as dir to sync its logs over the network.",
     inputSchema: syncLocalLogsShape,
   },
   (args) => syncLocalLogs(args),
