@@ -71,6 +71,8 @@ export interface Config {
   reportTtlDays: number;
   /** How long to wait for another process to release the database lock, in milliseconds. */
   lockTimeoutMs: number;
+  /** Sent as X-Api-Key to WoW Log Server, when it has one configured. */
+  wowLogApiKey: string | undefined;
 }
 
 let cached: Config | undefined;
@@ -121,6 +123,8 @@ export function getConfig(): Config {
   }
   const lockTimeoutMs = lockTimeoutSeconds * 1000;
 
-  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath, reportTtlDays, lockTimeoutMs };
+  const wowLogApiKey = process.env.WOWLOG_API_KEY?.trim() || undefined;
+
+  cached = { clientId, clientSecret, userId, dbPath, redirectUri, authPath, reportTtlDays, lockTimeoutMs, wowLogApiKey };
   return cached;
 }

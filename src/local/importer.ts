@@ -1,14 +1,14 @@
 /**
  * Import a WoWCombatLog file into a local report schema, incrementally: each finished fight
- * is committed with the byte offset to resume from, so re-running it (as sync_local_logs does)
- * only parses what's new.
+ * is committed with the position to resume from (a byte offset on disk, a line number on a
+ * WoW Log Server), so re-running it (as sync_local_logs does) only parses what's new.
  */
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { dropSchema, SCHEMA_VERSION } from "../db/schema.js";
 import { LogParser, type Segment } from "./parser.js";
-import { readLines } from "./reader.js";
+import { fileSource, remoteSource, type LogSource } from "./reader.js";
+import { isRemoteLocation, parseRemoteFile } from "./remote.js";
 import { commitSegments, getIngest, loadReportState, setIngest, type IngestRow } from "./store.js";
 import { parseLine } from "./tokenize.js";
 
@@ -45,9 +45,9 @@ export interface ImportResult {
  * and if it's moved or renamed. Null until the file has those lines; "not_a_combat_log" when
  * it doesn't start with the COMBAT_LOG_VERSION header every combat log begins with.
  */
-export async function reportCodeForFile(path: string): Promise<string | null | "not_a_combat_log"> {
+export async function reportCodeForFile(source: LogSource): Promise<string | null | "not_a_combat_log"> {
   const lines: string[] = [];
-  for await (const { line } of readLines(path, 0)) {
+  for await (const { line } of source.lines(0, IDENTITY_LINES)) {
     if (lines.length === 0 && parseLine(line)?.event !== "COMBAT_LOG_VERSION") return "not_a_combat_log";
     lines.push(line);
     if (lines.length === IDENTITY_LINES) break;
@@ -62,15 +62,20 @@ export async function reportCodeForFile(path: string): Promise<string | null | "
  */
 const locks = new Map<string, Promise<unknown>>();
 
-export async function importLogFile(pathInput: string, options: ImportOptions): Promise<ImportResult> {
-  const path = resolve(pathInput);
-  const code = await reportCodeForFile(path);
+/** The source for a path or WoW Log Server URL (http://host:port/<version>/<filename>). */
+export function sourceFor(location: string): LogSource {
+  return isRemoteLocation(location) ? remoteSource(parseRemoteFile(location)) : fileSource(resolve(location));
+}
+
+export async function importLogFile(input: string | LogSource, options: ImportOptions): Promise<ImportResult> {
+  const source = typeof input === "string" ? sourceFor(input) : input;
+  const code = await reportCodeForFile(source);
   if (!code || code === "not_a_combat_log") {
     const status = code === "not_a_combat_log" ? "not_a_combat_log" : "waiting";
     return { report_code: null, status, fights_added: 0, events_added: 0, in_progress: false };
   }
   const prev = locks.get(code) ?? Promise.resolve();
-  const run = prev.catch(() => undefined).then(() => importLocked(path, code, options));
+  const run = prev.catch(() => undefined).then(() => importLocked(source, code, options));
   locks.set(code, run);
   try {
     return await run;
@@ -79,19 +84,24 @@ export async function importLogFile(pathInput: string, options: ImportOptions): 
   }
 }
 
-async function importLocked(path: string, code: string, options: ImportOptions): Promise<ImportResult> {
-  const size = (await stat(path)).size;
+async function importLocked(source: LogSource, code: string, options: ImportOptions): Promise<ImportResult> {
+  const path = source.location;
+  const size = await source.size();
   let ingest = await getIngest(code);
 
   if (ingest?.status === "ignored" && options.respectIgnored && !options.force) {
     return { report_code: code, status: "ignored", fights_added: 0, events_added: 0, in_progress: false };
   }
-  // Start over when asked, when the stored copy is from another schema version, or when the
-  // file shrank (it was replaced; offsets no longer mean anything).
+  // Start over when asked, when the stored copy is from another schema version, when the
+  // file shrank (it was replaced; offsets no longer mean anything), or when the stored offset
+  // came from the other kind of source (bytes on disk vs. lines on a WoW Log Server).
   const restart =
     options.force ||
     ingest?.status === "ignored" ||
-    (ingest && (ingest.schema_version !== SCHEMA_VERSION || size < ingest.byte_offset));
+    (ingest &&
+      (ingest.schema_version !== SCHEMA_VERSION ||
+        size < ingest.byte_offset ||
+        isRemoteLocation(ingest.path) !== source.remote));
   if (restart) {
     await dropSchema(code);
     await setIngest(null, {
@@ -133,7 +143,7 @@ async function importLocked(path: string, code: string, options: ImportOptions):
     report_code: code, status: "superseded", fights_added: fightsAdded, events_added: eventsAdded, in_progress: false,
   });
 
-  for await (const { line, end } of readLines(path, base.byte_offset)) {
+  for await (const { line, end } of source.lines(base.byte_offset)) {
     readOffset = end;
     const raw = parseLine(line);
     if (!raw) continue;

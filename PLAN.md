@@ -237,6 +237,23 @@ write our own version-aware parser.
   A later `live_*` staging table could expose the open segment for "what's happening now" queries.
 - Idempotent: segment schema name is deterministic, so re-import replaces, never duplicates.
 
+## Remote logs (WoW Log Server)
+- When WoW runs on another machine, [WoW Log Server](https://github.com/webmakersteve/wow-log-server)
+  serves its Logs folders over HTTP. `import_local_log(path)` and `sync_local_logs(dir)` take its URL
+  in place of a path: `http://host:5180[/<version>]` as a sync location (saved in `log_dirs` like a
+  directory), `http://host:5180/<version>/<filename>` for one file. `WOWLOG_API_KEY` is sent as `X-Api-Key`.
+- `LogSource` (local/reader.ts) abstracts where lines come from. A file's positions are bytes; a
+  server's are complete lines (it indexes by line, and serves `[start, end)` line ranges and only
+  complete lines). The ingest row's `file_size` / `byte_offset` columns hold whichever applies.
+  A stored position from the other kind of source (same report code, other location kind) → start over.
+- Listing uses `/api/v1/wow/files` and reading uses `/api/v1/wow/logs` in 20k-line windows, each read
+  fully before it's parsed, so database commits never stall the server's response stream. Every
+  read passes the `fileId` from the listing; a `409`/`416` means the file was replaced, so the
+  import fails rather than mixing two files. Files are ordered per flavor by the timestamp in
+  their name, and each flavor's newest file is non-final, like the newest file on disk.
+- The server's `/watch` event stream isn't used: like local directories, remote syncs happen on
+  request (see above for why there's no background watcher).
+
 ## Validation
 Matched pair: WCL `fdL2G1c6Vr7H3NDb` (Kings' Rest +16, also fight 5 of `cq6nxBNF1P8hKAwQ`) +
 the raw log of the same run. Diff per event type counts, per-player damage/healing totals, deaths

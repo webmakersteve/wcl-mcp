@@ -3,6 +3,9 @@
  * was appended to the directory's combat logs since the last one. There's no background
  * watching; the importer resumes from saved offsets, so a sync only parses what's new.
  *
+ * A "directory" can also be a WoW Log Server URL (http://host:port, or http://host:port/retail
+ * for one flavor): the combat logs of a WoW install on another machine, read over the network.
+ *
  * WoW starts a new WoWCombatLog-<date>_<time>.txt each time logging is enabled, so every file
  * but the newest in a directory is finished (imported with final=true); the newest may still
  * be written to, so a fight still open at its end waits for the next sync.
@@ -12,6 +15,15 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { big, queryRows, write } from "../db/duck.js";
 import { importLogFile, type ImportResult } from "./importer.js";
+import { fileSource, remoteSource, type LogSource } from "./reader.js";
+import {
+  checkRemote,
+  isRemoteLocation,
+  listRemoteFiles,
+  parseRemoteDir,
+  remoteFileLocation,
+  type RemoteFileInfo,
+} from "./remote.js";
 import { ensureLocalTables, LOCAL_SCHEMA } from "./store.js";
 
 const LOG_FILE_RE = /^WoWCombatLog.*\.txt$/i;
@@ -61,7 +73,7 @@ async function saveDir(dir: string): Promise<void> {
 
 /** Forget a saved directory (or all of them). Imported reports are kept. */
 export async function forgetDirs(dir?: string): Promise<string[]> {
-  const targets = dir ? [resolve(dir)] : await savedDirs();
+  const targets = dir ? [normalizeDir(dir)] : await savedDirs();
   for (const d of targets) {
     await write((conn) => conn.run(`DELETE FROM ${LOCAL_SCHEMA}.log_dirs WHERE path = $path`, { path: d }));
   }
@@ -72,7 +84,17 @@ export async function forgetDirs(dir?: string): Promise<string[]> {
  * The directories to sync: `dir` (saved for next time), else every saved directory, else the
  * first default install location that exists (also saved).
  */
+function normalizeDir(dir: string): string {
+  return isRemoteLocation(dir) ? parseRemoteDir(dir).location : resolve(dir);
+}
+
 async function dirsToSync(dir?: string): Promise<string[]> {
+  if (dir && isRemoteLocation(dir)) {
+    const remote = parseRemoteDir(dir);
+    await checkRemote(remote.base, remote.version);
+    await saveDir(remote.location);
+    return [remote.location];
+  }
   if (dir) {
     const abs = resolve(dir);
     if (!(await isDir(abs))) throw new Error(`Not a directory: ${abs}`);
@@ -89,11 +111,18 @@ async function dirsToSync(dir?: string): Promise<string[]> {
   }
   throw new Error(
     `No saved log directory and no WoW Logs directory found. Tried:\n  ${defaultLogDirs().join("\n  ")}\n` +
-      "Pass dir explicitly (World of Warcraft/_retail_/Logs).",
+      "Pass dir explicitly (World of Warcraft/_retail_/Logs), or a WoW Log Server URL " +
+      "(http://<gaming-pc>:5180) to read the logs from another machine.",
   );
 }
 
-async function listLogFiles(dir: string): Promise<Array<{ path: string; mtime: number }>> {
+/** A directory's combat logs, in groups each oldest first (a group's last file may still be written). */
+async function listLogFiles(dir: string): Promise<LogSource[][]> {
+  if (isRemoteLocation(dir)) return listRemoteLogFiles(dir);
+  return [(await listDiskLogFiles(dir)).map((f) => fileSource(f.path))];
+}
+
+async function listDiskLogFiles(dir: string): Promise<Array<{ path: string; mtime: number }>> {
   const names = await readdir(dir).catch(() => [] as string[]);
   const files = [];
   for (const name of names) {
@@ -103,6 +132,40 @@ async function listLogFiles(dir: string): Promise<Array<{ path: string; mtime: n
     if (s?.isFile()) files.push({ path, mtime: s.mtimeMs });
   }
   return files.sort((a, b) => a.mtime - b.mtime);
+}
+
+/**
+ * Sort key for WoWCombatLog-MMDDYY_HHMMSS.txt (the time logging started), so a server's files
+ * order by age without trusting its timestamps. Names without that pattern sort first.
+ */
+function logNameKey(name: string): string {
+  const m = /-(\d\d)(\d\d)(\d\d)_(\d{6})/.exec(name);
+  return m ? `1${m[3]}${m[1]}${m[2]}${m[4]}` : `0${name.toLowerCase()}`;
+}
+
+/** A WoW Log Server's combat logs, one group per flavor (each has its own newest file). */
+async function listRemoteLogFiles(dir: string): Promise<LogSource[][]> {
+  const remote = parseRemoteDir(dir);
+  const byVersion = new Map<string, RemoteFileInfo[]>();
+  for (const f of await listRemoteFiles(remote.base, remote.version)) {
+    if (!LOG_FILE_RE.test(f.filename)) continue;
+    byVersion.set(f.version, [...(byVersion.get(f.version) ?? []), f]);
+  }
+  return [...byVersion.entries()].map(([version, files]) =>
+    files
+      .sort((a, b) => logNameKey(a.filename).localeCompare(logNameKey(b.filename)))
+      .map((f) =>
+        remoteSource(
+          {
+            base: remote.base,
+            version,
+            filename: f.filename,
+            location: remoteFileLocation(remote.base, version, f.filename),
+          },
+          f,
+        ),
+      ),
+  );
 }
 
 export interface DirSync {
@@ -115,14 +178,24 @@ export interface DirSync {
 export async function syncDirs(dir?: string): Promise<DirSync[]> {
   const out: DirSync[] = [];
   for (const d of await dirsToSync(dir)) {
-    const files = await listLogFiles(d);
     const result: DirSync = { dir: d, files: [], errors: [] };
-    for (const [i, f] of files.entries()) {
-      try {
-        const r = await importLogFile(f.path, { final: i < files.length - 1, respectIgnored: true });
-        result.files.push({ file: f.path, ...r });
-      } catch (err) {
-        result.errors.push({ file: f.path, error: (err as Error).message });
+    let groups: LogSource[][];
+    try {
+      groups = await listLogFiles(d);
+    } catch (err) {
+      // An unreachable server mustn't stop the other saved directories from syncing.
+      result.errors.push({ file: d, error: (err as Error).message });
+      out.push(result);
+      continue;
+    }
+    for (const files of groups) {
+      for (const [i, f] of files.entries()) {
+        try {
+          const r = await importLogFile(f, { final: i < files.length - 1, respectIgnored: true });
+          result.files.push({ file: f.location, ...r });
+        } catch (err) {
+          result.errors.push({ file: f.location, error: (err as Error).message });
+        }
       }
     }
     out.push(result);

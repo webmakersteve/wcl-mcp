@@ -3,11 +3,18 @@ import { queryRows } from "../db/duck.js";
 import { quotedSchema, schemaExists, schemaName } from "../db/schema.js";
 import { forgetDirs, savedDirs, syncDirs } from "../local/dirs.js";
 import { importLogFile } from "../local/importer.js";
+import { isRemoteLocation } from "../local/remote.js";
 import { listIngests } from "../local/store.js";
 import { guard, ok } from "./result.js";
 
 export const importLocalLogShape = {
-  path: z.string().describe("Path to a WoWCombatLog*.txt file."),
+  path: z
+    .string()
+    .describe(
+      "Path to a WoWCombatLog*.txt file, or a log on a WoW Log Server (WoW on another machine): " +
+        "http://<host>:5180/<version>/<filename>, e.g. " +
+        "http://gaming-pc:5180/retail/WoWCombatLog-110526_100931.txt.",
+    ),
   force: z
     .boolean()
     .optional()
@@ -39,7 +46,9 @@ export const syncLocalLogsShape = {
     .string()
     .optional()
     .describe(
-      "WoW Logs directory (World of Warcraft/_retail_/Logs); saved for later syncs. Omit to sync " +
+      "WoW Logs directory (World of Warcraft/_retail_/Logs), or a WoW Log Server URL to read " +
+        "the logs of WoW on another machine over the network: http://<host>:5180 (every flavor) " +
+        "or http://<host>:5180/<version> (e.g. /retail). Saved for later syncs. Omit to sync " +
         "the saved directories (or, if none, the usual install location).",
     ),
 };
@@ -96,7 +105,8 @@ export async function listLocalLogs() {
         report_code: f.report_code,
         path: f.path,
         status: f.status,
-        imported_bytes: f.byte_offset,
+        // A WoW Log Server import tracks lines (the server indexes logs by line), not bytes.
+        ...(isRemoteLocation(f.path) ? { imported_lines: f.byte_offset } : { imported_bytes: f.byte_offset }),
         updated_at: new Date(f.updated_at).toISOString(),
         fights,
       });

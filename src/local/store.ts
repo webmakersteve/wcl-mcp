@@ -21,7 +21,12 @@ export type IngestStatus = "active" | "complete" | "ignored";
 
 export interface IngestRow {
   report_code: string;
+  /** File path, or a WoW Log Server URL (http://host:port/<version>/<filename>). */
   path: string;
+  /**
+   * Source length and resume position: bytes for a file on disk, complete lines for a WoW Log
+   * Server log (it indexes logs by line). The column names predate remote sources.
+   */
   file_size: number;
   byte_offset: number;
   schema_version: number;
