@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/webmakersteve/wcl-mcp/compare/v0.3.0...v0.4.0) (2026-11-07)
+
+
+### Features
+
+* import combat logs from a WoW Log Server over the network ([#11](https://github.com/webmakersteve/wcl-mcp/issues/11)) ([5bc78df](https://github.com/webmakersteve/wcl-mcp/commit/5bc78dfd1a3db64485289e2676d9bf217be057f0))
+
 ## [0.3.0](https://github.com/webmakersteve/wcl-mcp/compare/v0.2.1...v0.3.0) (2026-10-25)
 
 
